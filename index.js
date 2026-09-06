@@ -10,30 +10,21 @@ const path = require('path');
 
 dotenv.config();
 
-// ===== KEEP-ALIVE : empêche Render de mettre le bot en veille =====
+// ===== KEEP-ALIVE =====
 const http = require('http');
 const PORT = process.env.PORT || 3000;
-
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('OK');
 });
-
-server.listen(PORT, () => {
-  console.log(`✅ Keep-alive server running on port ${PORT}`);
-});
-
-// Auto-ping toutes les 3 minutes (180 000 ms)
+server.listen(PORT, () => console.log(`✅ Keep-alive server running on port ${PORT}`));
 setInterval(() => {
-  fetch(`http://localhost:${PORT}/`)
-    .then(() => console.log('🔄 Keep-alive ping'))
-    .catch(() => {});
+  fetch(`http://localhost:${PORT}/`).then(() => console.log('🔄 Keep-alive ping')).catch(() => {});
 }, 180000);
-// ===== FIN KEEP-ALIVE =====
 
+// ===== DATABASE =====
 const db = new Database(path.join(__dirname, 'whispers.db'));
 
-// ===== TABLES =====
 db.exec(`
   CREATE TABLE IF NOT EXISTS conversations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,7 +37,6 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )
 `);
-
 db.exec(`
   CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,7 +47,6 @@ db.exec(`
     sent_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )
 `);
-
 db.exec(`
   CREATE TABLE IF NOT EXISTS active_sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,17 +84,14 @@ const QUOTES = [
   '💬 "Trust the whisper, not the shout."',
   '💬 "A whisper can heal a broken heart."'
 ];
+function getRandomQuote() { return QUOTES[Math.floor(Math.random() * QUOTES.length)]; }
 
-function getRandomQuote() {
-  return QUOTES[Math.floor(Math.random() * QUOTES.length)];
-}
-
-// ===== COMMANDES AVEC AUTOCOMPLÉTION =====
+// ===== COMMANDES =====
 const commands = [
   new SlashCommandBuilder().setName('ping').setDescription('Replies Pong!'),
   new SlashCommandBuilder()
     .setName('whisper')
-    .setDescription('Send an anonymous message')
+    .setDescription('Send an anonymous message to a server member')
     .addStringOption(option =>
       option.setName('target')
         .setDescription('Search for a member by username or nickname')
@@ -144,18 +130,12 @@ function getOrCreateConversation(userA, userB) {
     (user_a_id = ? AND user_b_id = ?) OR
     (user_a_id = ? AND user_b_id = ?)
   `).get(userA, userB, userB, userA);
-
   if (row) {
     if (row.is_blocked) throw new Error('Conversation is blocked');
     return row;
   }
-
-  const info = db.prepare(`
-    INSERT INTO conversations (user_a_id, user_b_id) VALUES (?, ?)
-  `).run(userA, userB);
-
-  row = db.prepare(`SELECT * FROM conversations WHERE id = ?`).get(info.lastInsertRowid);
-  return row;
+  const info = db.prepare(`INSERT INTO conversations (user_a_id, user_b_id) VALUES (?, ?)`).run(userA, userB);
+  return db.prepare(`SELECT * FROM conversations WHERE id = ?`).get(info.lastInsertRowid);
 }
 
 function saveMessage(conversationId, senderId, receiverId, content) {
@@ -163,7 +143,6 @@ function saveMessage(conversationId, senderId, receiverId, content) {
     INSERT INTO messages (conversation_id, sender_id, receiver_id, content)
     VALUES (?, ?, ?, ?)
   `).run(conversationId, senderId, receiverId, content);
-
   return db.prepare(`SELECT * FROM messages WHERE id = ?`).get(info.lastInsertRowid);
 }
 
@@ -178,19 +157,12 @@ function getUserPseudo(conversation, userId) {
 }
 
 function setUserPseudo(conversationId, userId, pseudo) {
-  db.prepare(`
-    UPDATE conversations SET pseudo_a = ? WHERE id = ? AND user_a_id = ?
-  `).run(pseudo, conversationId, userId);
-
-  db.prepare(`
-    UPDATE conversations SET pseudo_b = ? WHERE id = ? AND user_b_id = ?
-  `).run(pseudo, conversationId, userId);
+  db.prepare(`UPDATE conversations SET pseudo_a = ? WHERE id = ? AND user_a_id = ?`).run(pseudo, conversationId, userId);
+  db.prepare(`UPDATE conversations SET pseudo_b = ? WHERE id = ? AND user_b_id = ?`).run(pseudo, conversationId, userId);
 }
 
 function blockConversation(conversationId, userId) {
-  db.prepare(`
-    UPDATE conversations SET is_blocked = 1, blocked_by = ? WHERE id = ?
-  `).run(userId, conversationId);
+  db.prepare(`UPDATE conversations SET is_blocked = 1, blocked_by = ? WHERE id = ?`).run(userId, conversationId);
 }
 
 function getLastMessage(conversationId) {
@@ -246,15 +218,12 @@ const memberCache = new Map();
 
 async function getCachedMembers(interaction) {
   if (!interaction.guild) return [];
-
   const guildId = interaction.guild.id;
   const now = Date.now();
   const cacheEntry = memberCache.get(guildId);
-
   if (cacheEntry && (now - cacheEntry.lastUpdated) < 60000) {
     return cacheEntry.members;
   }
-
   try {
     await interaction.guild.members.fetch();
     const members = interaction.guild.members.cache
@@ -264,91 +233,12 @@ async function getCachedMembers(interaction) {
         username: m.user.username,
         displayName: m.displayName
       }));
-
-    memberCache.set(guildId, {
-      members: members,
-      lastUpdated: now
-    });
-
+    memberCache.set(guildId, { members, lastUpdated: now });
     return members;
   } catch (error) {
     console.error('❌ Error fetching members:', error.message);
     if (cacheEntry) return cacheEntry.members;
     return [];
-  }
-}
-
-async function showMainMenu(interaction) {
-  try {
-    if (!interaction.guild) {
-      await interaction.followUp({
-        content: '❌ This command must be used in a server, not in DMs.',
-        ephemeral: true
-      });
-      return;
-    }
-
-    const members = await getCachedMembers(interaction);
-
-    if (members.length === 0) {
-      await interaction.followUp({
-        content: '❌ No members found in this server.',
-        ephemeral: true
-      });
-      return;
-    }
-
-    const embed = new EmbedBuilder()
-      .setColor(0x6C2BD9)
-      .setImage(BANNER_URL)
-      .setTitle('💋 Who deserves your whisper?')
-      .setDescription('Select a server member to send an anonymous message to.')
-      .addFields({ name: '💬 Quote', value: getRandomQuote(), inline: false })
-      .setFooter({ text: 'Vegas Whispers • Your identity is safe' })
-      .setTimestamp();
-
-    const select = new StringSelectMenuBuilder()
-      .setCustomId('select_recipient')
-      .setPlaceholder('Choose a member...')
-      .addOptions(
-        members.slice(0, 25).map(m =>
-          new StringSelectMenuOptionBuilder()
-            .setLabel(m.displayName || m.username)
-            .setValue(m.id)
-        )
-      );
-
-    const row = new ActionRowBuilder().addComponents(select);
-    const cancelRow = new ActionRowBuilder()
-      .addComponents(
-        new ButtonBuilder()
-          .setCustomId('cancel_whisper')
-          .setLabel('Cancel')
-          .setStyle(ButtonStyle.Secondary)
-      );
-
-    if (interaction.replied || interaction.deferred) {
-      const reply = await interaction.followUp({
-        embeds: [embed],
-        components: [row, cancelRow],
-        ephemeral: true
-      });
-      saveSession(interaction.user.id, interaction.channel.id, reply.id, 'selecting_recipient', { guildId: interaction.guild?.id });
-    } else {
-      const reply = await interaction.reply({
-        embeds: [embed],
-        components: [row, cancelRow],
-        ephemeral: true
-      });
-      saveSession(interaction.user.id, interaction.channel.id, reply.id, 'selecting_recipient', { guildId: interaction.guild?.id });
-    }
-  } catch (error) {
-    console.error('❌ Error in showMainMenu:', error);
-    try {
-      await interaction.followUp({ content: '❌ An error occurred. Please try again with `/whisper`.', ephemeral: true });
-    } catch (e) {
-      console.error('❌ Could not send error message:', e);
-    }
   }
 }
 
@@ -397,14 +287,41 @@ client.on('interactionCreate', async interaction => {
 
         await interaction.deferReply({ ephemeral: true });
 
-        const target = await client.users.fetch(targetId);
+        // Vérifier si le destinataire existe
+        let target;
+        try {
+          target = await client.users.fetch(targetId);
+        } catch (err) {
+          await interaction.editReply({ content: '❌ User not found. Please try again.' });
+          return;
+        }
+
+        if (target.id === sender.id) {
+          await interaction.editReply({ content: '❌ You cannot send a whisper to yourself.' });
+          return;
+        }
+
+        if (target.bot) {
+          await interaction.editReply({ content: '❌ You cannot send a whisper to a bot.' });
+          return;
+        }
+
         let displayName = target.username;
         if (interaction.guild) {
           const member = await interaction.guild.members.fetch(targetId).catch(() => null);
           if (member) displayName = member.displayName;
         }
 
-        // On vérifie si une conversation existe déjà
+        // Vérifier la limite de paragraphes
+        const paragraphs = messageContent.split(/\n\s*\n/).filter(p => p.trim().length > 0);
+        if (paragraphs.length > 3) {
+          await interaction.editReply({
+            content: `❌ **${paragraphs.length} paragraphs** detected. Maximum is 3. Please shorten your message.`
+          });
+          return;
+        }
+
+        // Créer ou récupérer la conversation
         let conversation;
         try {
           conversation = getOrCreateConversation(sender.id, target.id);
@@ -418,15 +335,14 @@ client.on('interactionCreate', async interaction => {
           return;
         }
 
-        // Récupérer le pseudo de l'expéditeur
         const senderPseudo = getUserPseudo(conversation, sender.id);
 
+        // Si l'utilisateur n'a pas encore de pseudo, lui proposer
         if (!senderPseudo) {
-          // Proposer les pseudos
           const embed = new EmbedBuilder()
             .setColor(0x6C2BD9)
             .setImage(BANNER_URL)
-            .setTitle(`🌙 What name will you wear tonight?`)
+            .setTitle(`🌙 Choose Your Identity`)
             .setDescription(`You are about to message **${displayName}**.\n\nSelect a name for this conversation.`)
             .addFields({ name: '💬 Quote', value: getRandomQuote(), inline: false })
             .setFooter({ text: 'Vegas Whispers • Your identity is safe' })
@@ -439,54 +355,67 @@ client.on('interactionCreate', async interaction => {
               new ButtonBuilder().setCustomId(`pseudo_${targetId}_friendly`).setLabel('🤝 Friendly Curious').setStyle(ButtonStyle.Success)
             );
 
-          saveSession(sender.id, interaction.channel.id, interaction.message?.id, 'choosing_pseudo', { targetId, targetDisplayName: displayName, messageContent });
+          // Sauvegarder le message en session en attendant le choix du pseudo
+          saveSession(sender.id, interaction.channel.id, interaction.message?.id, 'choosing_pseudo', { 
+            targetId, 
+            targetDisplayName: displayName, 
+            messageContent 
+          });
+
           await interaction.editReply({ embeds: [embed], components: [row] });
           return;
         }
 
-        // Si pseudo déjà existant, on envoie directement le message
+        // Envoyer le message
         let message;
         try {
           message = saveMessage(conversation.id, sender.id, target.id, messageContent);
         } catch (err) {
           console.error('❌ saveMessage error:', err);
-          await interaction.editReply({ content: '❌ Error saving message.' });
+          await interaction.editReply({ content: '❌ Error saving message. Please try again.' });
           return;
         }
 
-        await interaction.editReply({ content: `✅ **Sent!** ${messageContent.length} characters • ${messageContent.split(/\n\s*\n/).filter(p => p.trim().length > 0).length} paragraphs` });
+        await interaction.editReply({
+          content: `✅ **Sent!** ${messageContent.length} characters • ${paragraphs.length} paragraphs`
+        });
 
         // Envoyer au destinataire
-        const embedMsg = new EmbedBuilder()
-          .setColor(0x6C2BD9)
-          .setImage(BANNER_URL)
-          .setAuthor({ name: `💬 ${senderPseudo}` })
-          .setDescription(messageContent)
-          .setFooter({ text: `ID: ${message.id}` })
-          .setTimestamp();
+        try {
+          const embedMsg = new EmbedBuilder()
+            .setColor(0x6C2BD9)
+            .setImage(BANNER_URL)
+            .setAuthor({ name: `💬 ${senderPseudo}` })
+            .setDescription(messageContent)
+            .setFooter({ text: `ID: ${message.id}` })
+            .setTimestamp();
 
-        const lastMsg = getLastMessage(conversation.id);
-        if (lastMsg && lastMsg.id !== message.id) {
-          const participants = [conversation.user_a_id, conversation.user_b_id];
-          const pseudoMap = {};
-          for (const uid of participants) {
-            const p = getUserPseudo(conversation, uid);
-            if (p) pseudoMap[uid] = p;
+          const lastMsg = getLastMessage(conversation.id);
+          if (lastMsg && lastMsg.id !== message.id) {
+            const participants = [conversation.user_a_id, conversation.user_b_id];
+            const pseudoMap = {};
+            for (const uid of participants) {
+              const p = getUserPseudo(conversation, uid);
+              if (p) pseudoMap[uid] = p;
+            }
+            const sp = pseudoMap[lastMsg.sender_id] || 'Anonymous';
+            const preview = lastMsg.content.length > 100 ? lastMsg.content.slice(0, 100) + '...' : lastMsg.content;
+            embedMsg.addFields({ name: '📜 Last message', value: `**${sp}:** ${preview}` });
           }
-          const sp = pseudoMap[lastMsg.sender_id] || 'Anonymous';
-          const preview = lastMsg.content.length > 100 ? lastMsg.content.slice(0, 100) + '...' : lastMsg.content;
-          embedMsg.addFields({ name: '📜 Last message', value: `**${sp}:** ${preview}` });
+
+          const row1 = new ActionRowBuilder()
+            .addComponents(
+              new ButtonBuilder().setCustomId(`reply_${message.id}_${sender.id}`).setLabel('💬 Reply').setStyle(ButtonStyle.Primary),
+              new ButtonBuilder().setCustomId(`block_${conversation.id}_${sender.id}`).setLabel('🚫 Block Sender').setStyle(ButtonStyle.Danger),
+              new ButtonBuilder().setCustomId(`history_${conversation.id}`).setLabel('📜 History').setStyle(ButtonStyle.Secondary)
+            );
+
+          await target.send({ content: `👋 **You received a whisper:**`, embeds: [embedMsg], components: [row1] });
+          console.log(`✅ Message sent from ${sender.username} to ${displayName}`);
+        } catch (err) {
+          console.error(`❌ Error sending DM:`, err);
         }
 
-        const row1 = new ActionRowBuilder()
-          .addComponents(
-            new ButtonBuilder().setCustomId(`reply_${message.id}_${sender.id}`).setLabel('💬 Reply').setStyle(ButtonStyle.Primary),
-            new ButtonBuilder().setCustomId(`block_${conversation.id}_${sender.id}`).setLabel('🚫 Block Sender').setStyle(ButtonStyle.Danger),
-            new ButtonBuilder().setCustomId(`history_${conversation.id}`).setLabel('📜 History').setStyle(ButtonStyle.Secondary)
-          );
-
-        await target.send({ content: `👋 **You received a whisper:**`, embeds: [embedMsg], components: [row1] });
-        console.log(`✅ Message sent from ${sender.username} to ${displayName}`);
         return;
       }
 
@@ -547,19 +476,8 @@ client.on('interactionCreate', async interaction => {
     }
 
     // =============================================
-    // ===== BOUTONS =====
+    // ===== PSEUDO SELECTION =====
     // =============================================
-
-    // Cancel Whisper
-    if (interaction.isButton() && interaction.customId === 'cancel_whisper') {
-      await interaction.deferUpdate();
-      await interaction.deleteReply();
-      deleteSession(interaction.user.id);
-      await showMainMenu(interaction);
-      return;
-    }
-
-    // Pseudo selection
     if (interaction.isButton() && interaction.customId.startsWith('pseudo_')) {
       await interaction.deferUpdate();
       const parts = interaction.customId.split('_');
@@ -573,17 +491,23 @@ client.on('interactionCreate', async interaction => {
         await interaction.editReply({ content: '❌ Session expired. Please use /whisper again.', embeds: [], components: [] });
         return;
       }
+
       const data = session.data ? JSON.parse(session.data) : {};
       const targetDisplayName = data.targetDisplayName || targetId;
       const messageContent = data.messageContent;
 
-      // Enregistrer le pseudo dans la base
+      if (!messageContent) {
+        await interaction.editReply({ content: '❌ No message found. Please use /whisper again.', embeds: [], components: [] });
+        return;
+      }
+
       try {
         const conversation = getOrCreateConversation(interaction.user.id, targetId);
         setUserPseudo(conversation.id, interaction.user.id, pseudo);
 
-        // Envoyer le message maintenant que le pseudo est défini
         const target = await client.users.fetch(targetId);
+
+        // Envoyer le message
         let message;
         try {
           message = saveMessage(conversation.id, interaction.user.id, target.id, messageContent);
@@ -593,8 +517,11 @@ client.on('interactionCreate', async interaction => {
           return;
         }
 
-        await interaction.editReply({ content: `✅ **Sent!** (as ${pseudo})` });
+        await interaction.editReply({
+          content: `✅ **Sent!** (as ${pseudo})`
+        });
 
+        // Envoyer au destinataire
         const embedMsg = new EmbedBuilder()
           .setColor(0x6C2BD9)
           .setImage(BANNER_URL)
@@ -625,6 +552,7 @@ client.on('interactionCreate', async interaction => {
 
         await target.send({ content: `👋 **You received a whisper:**`, embeds: [embedMsg], components: [row1] });
         console.log(`✅ Message sent from ${interaction.user.username} to ${targetDisplayName}`);
+
         deleteSession(interaction.user.id);
       } catch (err) {
         console.error('❌ Error in pseudo flow:', err);
@@ -633,14 +561,9 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // Open modal for message (button after pseudo selection - we already handle above, but keep for safety)
-    if (interaction.isButton() && interaction.customId.startsWith('open_modal_')) {
-      // Not used in current flow (we use pseudo button directly)
-      await interaction.reply({ content: '⚠️ This button is outdated. Please use /whisper again.', ephemeral: true });
-      return;
-    }
-
-    // Reply button
+    // =============================================
+    // ===== REPLY BUTTON =====
+    // =============================================
     if (interaction.isButton() && interaction.customId.startsWith('reply_')) {
       const parts = interaction.customId.split('_');
       const messageId = parts[1];
@@ -665,7 +588,9 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // Reply modal submit
+    // =============================================
+    // ===== REPLY MODAL =====
+    // =============================================
     if (interaction.isModalSubmit() && interaction.customId.startsWith('reply_modal_')) {
       await interaction.deferReply({ ephemeral: true });
 
@@ -677,7 +602,9 @@ client.on('interactionCreate', async interaction => {
 
       const paragraphs = replyContent.split(/\n\s*\n/).filter(p => p.trim().length > 0);
       if (paragraphs.length > 3) {
-        await interaction.editReply({ content: `❌ **${paragraphs.length} paragraphs** detected. Maximum is 3.` });
+        await interaction.editReply({
+          content: `❌ **${paragraphs.length} paragraphs** detected. Maximum is 3.`
+        });
         return;
       }
 
@@ -716,6 +643,7 @@ client.on('interactionCreate', async interaction => {
 
       try {
         const sender = await client.users.fetch(senderId);
+
         const embed = new EmbedBuilder()
           .setColor(0x6C2BD9)
           .setImage(BANNER_URL)
@@ -744,27 +672,35 @@ client.on('interactionCreate', async interaction => {
             new ButtonBuilder().setCustomId(`history_${conversation.id}`).setLabel('📜 History').setStyle(ButtonStyle.Secondary)
           );
 
-        await sender.send({ content: `👋 **Someone replied to your whisper:**`, embeds: [embed], components: [row1] });
+        await sender.send({
+          content: `👋 **Someone replied to your whisper:**`,
+          embeds: [embed],
+          components: [row1]
+        });
         console.log(`✅ Reply sent from ${replier.username}`);
-      } catch (error) {
-        console.error(`❌ Error sending reply:`, error);
+      } catch (err) {
+        console.error(`❌ Error sending reply:`, err);
       }
       return;
     }
 
-    // History button
+    // =============================================
+    // ===== HISTORY BUTTON =====
+    // =============================================
     if (interaction.isButton() && interaction.customId.startsWith('history_')) {
       await interaction.deferReply({ ephemeral: true });
       const conversationId = interaction.customId.split('_')[1];
 
       const conversation = db.prepare(`SELECT * FROM conversations WHERE id = ?`).get(conversationId);
       if (!conversation) {
-        return interaction.editReply({ content: '❌ Conversation not found.' });
+        await interaction.editReply({ content: '❌ Conversation not found.' });
+        return;
       }
 
       const history = getConversationHistory(conversationId, 10);
       if (!history || history.length === 0) {
-        return interaction.editReply({ content: '📜 No messages in this conversation yet.' });
+        await interaction.editReply({ content: '📜 No messages in this conversation yet.' });
+        return;
       }
 
       let historyText = '';
@@ -791,7 +727,9 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // Block button
+    // =============================================
+    // ===== BLOCK BUTTON =====
+    // =============================================
     if (interaction.isButton() && interaction.customId.startsWith('block_')) {
       await interaction.deferReply({ ephemeral: true });
 
@@ -816,11 +754,16 @@ client.on('interactionCreate', async interaction => {
           new ButtonBuilder().setCustomId(`cancel_block_${conversationId}`).setLabel('❌ Cancel').setStyle(ButtonStyle.Secondary)
         );
 
-      await interaction.editReply({ content: `⚠️ **Block this sender?** You will no longer receive messages.`, components: [row] });
+      await interaction.editReply({
+        content: `⚠️ **Block this sender?** You will no longer receive messages.`,
+        components: [row]
+      });
       return;
     }
 
-    // Confirm block
+    // =============================================
+    // ===== CONFIRM BLOCK =====
+    // =============================================
     if (interaction.isButton() && interaction.customId.startsWith('confirm_block_')) {
       await interaction.deferUpdate();
       const parts = interaction.customId.split('_');
@@ -834,7 +777,10 @@ client.on('interactionCreate', async interaction => {
         return;
       }
 
-      await interaction.editReply({ content: `✅ **Blocked.**`, components: [] });
+      await interaction.editReply({
+        content: `✅ **Blocked.**`,
+        components: []
+      });
 
       try {
         const sender = await client.users.fetch(senderId);
@@ -843,10 +789,15 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // Cancel block
+    // =============================================
+    // ===== CANCEL BLOCK =====
+    // =============================================
     if (interaction.isButton() && interaction.customId.startsWith('cancel_block_')) {
       await interaction.deferUpdate();
-      await interaction.editReply({ content: `❌ Cancelled.`, components: [] });
+      await interaction.editReply({
+        content: `❌ Cancelled.`,
+        components: []
+      });
       return;
     }
 
