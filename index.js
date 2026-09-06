@@ -1,8 +1,19 @@
 const {
-  Client, GatewayIntentBits, Partials, REST, Routes,
-  SlashCommandBuilder, EmbedBuilder, ActionRowBuilder,
-  ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder,
-  TextInputStyle, StringSelectMenuBuilder, StringSelectMenuOptionBuilder
+  Client,
+  GatewayIntentBits,
+  Partials,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder
 } = require('discord.js');
 
 const dotenv = require('dotenv');
@@ -22,19 +33,22 @@ if (!process.env.TOKEN) {
 // KEEP-ALIVE
 // =====================================================
 
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT || 3000);
 
 const server = http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.writeHead(200, {
+    'Content-Type': 'text/plain; charset=utf-8'
+  });
+
   res.end('OK');
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Keep-alive server running on port ${PORT}`);
 });
 
 const keepAliveTimer = setInterval(() => {
-  fetch(`http://localhost:${PORT}/`)
+  fetch(`http://127.0.0.1:${PORT}/`)
     .then(() => console.log('🔄 Keep-alive ping'))
     .catch(() => {});
 }, 180000);
@@ -50,7 +64,20 @@ const db = new Database(
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
+function tableExists(tableName) {
+  return !!db
+    .prepare(`
+      SELECT 1
+      FROM sqlite_master
+      WHERE type = 'table'
+      AND name = ?
+    `)
+    .get(tableName);
+}
+
 function hasColumn(tableName, columnName) {
+  if (!tableExists(tableName)) return false;
+
   return db
     .prepare(`PRAGMA table_info(${tableName})`)
     .all()
@@ -74,9 +101,9 @@ function addColumnIfMissing(
 }
 
 function initializeDatabase() {
-  // ---------------------------------------------------
-  // Base tables
-  // ---------------------------------------------------
+  // ===================================================
+  // BASE TABLES
+  // ===================================================
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS conversations (
@@ -130,9 +157,9 @@ function initializeDatabase() {
     );
   `);
 
-  // ---------------------------------------------------
-  // Migrations
-  // ---------------------------------------------------
+  // ===================================================
+  // MIGRATIONS
+  // ===================================================
 
   addColumnIfMissing(
     'messages',
@@ -170,7 +197,7 @@ function initializeDatabase() {
     'INTEGER'
   );
 
-  // Ancienne version : sent = 0/1
+  // Legacy sent column migration.
   if (hasColumn('messages', 'sent')) {
     db.exec(`
       UPDATE messages
@@ -218,10 +245,6 @@ function initializeDatabase() {
     'DATETIME'
   );
 
-  // ---------------------------------------------------
-  // Nettoyage / indexes
-  // ---------------------------------------------------
-
   db.exec(`
     UPDATE processed_actions
     SET
@@ -233,7 +256,7 @@ function initializeDatabase() {
       );
   `);
 
-  // Une seule session active par utilisateur.
+  // One active session per user.
   db.exec(`
     DELETE FROM active_sessions
     WHERE id NOT IN (
@@ -243,7 +266,7 @@ function initializeDatabase() {
     );
   `);
 
-  // Générer un request_id pour anciennes sessions.
+  // Legacy sessions without request_id.
   const oldSessions = db.prepare(`
     SELECT id
     FROM active_sessions
@@ -282,15 +305,11 @@ function initializeDatabase() {
       ON messages(action_key);
 
     CREATE INDEX IF NOT EXISTS
-      idx_sessions_user_id
-      ON active_sessions(user_id);
-
-    CREATE INDEX IF NOT EXISTS
       idx_sessions_request_id
       ON active_sessions(request_id);
 
     CREATE INDEX IF NOT EXISTS
-      idx_processed_actions_status
+      idx_actions_status
       ON processed_actions(status);
   `);
 
@@ -334,9 +353,17 @@ const QUOTES = [
   '💬 "A whisper can heal a broken heart."'
 ];
 
+const PSEUDOS = {
+  shadow: 'Shadow',
+  admirer: 'Secret Admirer',
+  friendly: 'Friendly Curious'
+};
+
 function getRandomQuote() {
   return QUOTES[
-    Math.floor(Math.random() * QUOTES.length)
+    Math.floor(
+      Math.random() * QUOTES.length
+    )
   ];
 }
 
@@ -346,11 +373,22 @@ function safeErrorMessage(error) {
     : String(error);
 }
 
+function countParagraphs(content) {
+  return content
+    .split(/\n\s*\n/)
+    .filter(
+      part =>
+        part.trim().length > 0
+    )
+    .length;
+}
+
 function parseSessionData(session) {
   try {
-    const data = session?.data
-      ? JSON.parse(session.data)
-      : {};
+    const data =
+      session?.data
+        ? JSON.parse(session.data)
+        : {};
 
     if (
       !data ||
@@ -366,17 +404,8 @@ function parseSessionData(session) {
   }
 }
 
-function countParagraphs(content) {
-  return content
-    .split(/\n\s*\n/)
-    .filter(
-      paragraph => paragraph.trim().length > 0
-    )
-    .length;
-}
-
 // =====================================================
-// SLASH COMMANDS
+// COMMANDS
 // =====================================================
 
 const commands = [
@@ -386,29 +415,15 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName('whisper')
-    .setDescription('Send an anonymous message')
-    .addStringOption(option =>
-      option
-        .setName('target')
-        .setDescription(
-          'Search by username/nickname or enter a member ID'
-        )
-        .setAutocomplete(true)
-        .setRequired(true)
-    )
-    .addStringOption(option =>
-      option
-        .setName('message')
-        .setDescription(
-          'Your message (max 3 paragraphs)'
-        )
-        .setRequired(true)
-        .setMaxLength(2000)
+    .setDescription(
+      'Open Vegas Whispers'
     ),
 
   new SlashCommandBuilder()
     .setName('admin')
-    .setDescription('Admin commands')
+    .setDescription(
+      'Admin commands'
+    )
     .addSubcommand(sub =>
       sub
         .setName('find')
@@ -430,41 +445,51 @@ const commands = [
     .setDescription(
       'Recover an interrupted session'
     )
-].map(command => command.toJSON());
+].map(command =>
+  command.toJSON()
+);
 
 const rest = new REST({
   version: '10'
-}).setToken(process.env.TOKEN);
+}).setToken(
+  process.env.TOKEN
+);
 
 // =====================================================
 // CONVERSATIONS
 // =====================================================
 
-function getConversationById(conversationId) {
-  return db.prepare(`
-    SELECT *
-    FROM conversations
-    WHERE id = ?
-  `).get(conversationId);
+function getConversationById(
+  conversationId
+) {
+  return db
+    .prepare(`
+      SELECT *
+      FROM conversations
+      WHERE id = ?
+    `)
+    .get(conversationId);
 }
 
 function getOrCreateConversation(
   userA,
   userB
 ) {
-  const existing = db.prepare(`
-    SELECT *
-    FROM conversations
-    WHERE
-      (user_a_id = ? AND user_b_id = ?)
-      OR
-      (user_a_id = ? AND user_b_id = ?)
-  `).get(
-    userA,
-    userB,
-    userB,
-    userA
-  );
+  const existing = db
+    .prepare(`
+      SELECT *
+      FROM conversations
+      WHERE
+        (user_a_id = ? AND user_b_id = ?)
+        OR
+        (user_a_id = ? AND user_b_id = ?)
+    `)
+    .get(
+      userA,
+      userB,
+      userB,
+      userA
+    );
 
   if (existing) {
     if (existing.is_blocked) {
@@ -476,30 +501,38 @@ function getOrCreateConversation(
     return existing;
   }
 
-  const [a, b] = [userA, userB].sort();
+  const [a, b] =
+    [userA, userB].sort();
 
-  const result = db.prepare(`
-    INSERT INTO conversations (
-      user_a_id,
-      user_b_id
-    )
-    VALUES (?, ?)
-  `).run(a, b);
+  const result =
+    db.prepare(`
+      INSERT INTO conversations (
+        user_a_id,
+        user_b_id
+      )
+      VALUES (?, ?)
+    `).run(a, b);
 
   return getConversationById(
     result.lastInsertRowid
   );
 }
 
-function getConversationOtherParticipant(
+function getOtherParticipant(
   conversation,
   userId
 ) {
-  if (conversation.user_a_id === userId) {
+  if (
+    conversation.user_a_id ===
+    userId
+  ) {
     return conversation.user_b_id;
   }
 
-  if (conversation.user_b_id === userId) {
+  if (
+    conversation.user_b_id ===
+    userId
+  ) {
     return conversation.user_a_id;
   }
 
@@ -511,13 +544,15 @@ function getUserPseudo(
   userId
 ) {
   if (
-    conversation.user_a_id === userId
+    conversation.user_a_id ===
+    userId
   ) {
     return conversation.pseudo_a;
   }
 
   if (
-    conversation.user_b_id === userId
+    conversation.user_b_id ===
+    userId
   ) {
     return conversation.pseudo_b;
   }
@@ -530,43 +565,45 @@ function setUserPseudo(
   userId,
   pseudo
 ) {
-  let result = db.prepare(`
-    UPDATE conversations
-    SET pseudo_a = ?
-    WHERE
-      id = ?
-      AND user_a_id = ?
-      AND (
-        pseudo_a IS NULL
-        OR pseudo_a = ''
-      )
-  `).run(
-    pseudo,
-    conversationId,
-    userId
-  );
+  const first =
+    db.prepare(`
+      UPDATE conversations
+      SET pseudo_a = ?
+      WHERE
+        id = ?
+        AND user_a_id = ?
+        AND (
+          pseudo_a IS NULL
+          OR pseudo_a = ''
+        )
+    `).run(
+      pseudo,
+      conversationId,
+      userId
+    );
 
-  if (result.changes > 0) {
+  if (first.changes > 0) {
     return true;
   }
 
-  result = db.prepare(`
-    UPDATE conversations
-    SET pseudo_b = ?
-    WHERE
-      id = ?
-      AND user_b_id = ?
-      AND (
-        pseudo_b IS NULL
-        OR pseudo_b = ''
-      )
-  `).run(
-    pseudo,
-    conversationId,
-    userId
-  );
+  const second =
+    db.prepare(`
+      UPDATE conversations
+      SET pseudo_b = ?
+      WHERE
+        id = ?
+        AND user_b_id = ?
+        AND (
+          pseudo_b IS NULL
+          OR pseudo_b = ''
+        )
+    `).run(
+      pseudo,
+      conversationId,
+      userId
+    );
 
-  return result.changes > 0;
+  return second.changes > 0;
 }
 
 function blockConversation(
@@ -585,8 +622,10 @@ function blockConversation(
   }
 
   if (
-    conversation.user_a_id !== userId &&
-    conversation.user_b_id !== userId
+    !getOtherParticipant(
+      conversation,
+      userId
+    )
   ) {
     throw new Error(
       'Not a participant'
@@ -597,18 +636,19 @@ function blockConversation(
     return false;
   }
 
-  const result = db.prepare(`
-    UPDATE conversations
-    SET
-      is_blocked = 1,
-      blocked_by = ?
-    WHERE
-      id = ?
-      AND is_blocked = 0
-  `).run(
-    userId,
-    conversationId
-  );
+  const result =
+    db.prepare(`
+      UPDATE conversations
+      SET
+        is_blocked = 1,
+        blocked_by = ?
+      WHERE
+        id = ?
+        AND is_blocked = 0
+    `).run(
+      userId,
+      conversationId
+    );
 
   return result.changes > 0;
 }
@@ -636,49 +676,6 @@ function getPreviousMessage(
   `).get(conversationId);
 }
 
-function createPendingMessage({
-  conversationId,
-  senderId,
-  receiverId,
-  content,
-  requestId,
-  actionKey
-}) {
-  const previous =
-    getPreviousMessage(
-      conversationId
-    );
-
-  const result = db.prepare(`
-    INSERT INTO messages (
-      conversation_id,
-      sender_id,
-      receiver_id,
-      content,
-      status,
-      attempts,
-      request_id,
-      action_key,
-      previous_message_id
-    )
-    VALUES (
-      ?, ?, ?, ?, 'pending', 0, ?, ?, ?
-    )
-  `).run(
-    conversationId,
-    senderId,
-    receiverId,
-    content,
-    requestId,
-    actionKey,
-    previous?.id ?? null
-  );
-
-  return getMessageById(
-    result.lastInsertRowid
-  );
-}
-
 function getMessageById(messageId) {
   return db.prepare(`
     SELECT *
@@ -697,6 +694,59 @@ function getMessageByRequestId(
     ORDER BY id DESC
     LIMIT 1
   `).get(requestId);
+}
+
+function createPendingMessage({
+  conversationId,
+  senderId,
+  receiverId,
+  content,
+  requestId,
+  actionKey
+}) {
+  const existing =
+    getMessageByRequestId(
+      requestId
+    );
+
+  if (existing) {
+    return existing;
+  }
+
+  const previous =
+    getPreviousMessage(
+      conversationId
+    );
+
+  const result =
+    db.prepare(`
+      INSERT INTO messages (
+        conversation_id,
+        sender_id,
+        receiver_id,
+        content,
+        status,
+        attempts,
+        request_id,
+        action_key,
+        previous_message_id
+      )
+      VALUES (
+        ?, ?, ?, ?, 'pending', 0, ?, ?, ?
+      )
+    `).run(
+      conversationId,
+      senderId,
+      receiverId,
+      content,
+      requestId,
+      actionKey,
+      previous?.id ?? null
+    );
+
+  return getMessageById(
+    result.lastInsertRowid
+  );
 }
 
 function markMessageSent(
@@ -728,14 +778,15 @@ function markMessageFailed(
 function incrementAttempts(
   messageId
 ) {
-  const result = db.prepare(`
-    UPDATE messages
-    SET attempts = attempts + 1
-    WHERE id = ?
-    RETURNING attempts
-  `).get(messageId);
+  const row =
+    db.prepare(`
+      UPDATE messages
+      SET attempts = attempts + 1
+      WHERE id = ?
+      RETURNING attempts
+    `).get(messageId);
 
-  return result?.attempts ?? 0;
+  return row?.attempts || 0;
 }
 
 function getPendingMessages() {
@@ -753,21 +804,24 @@ function getConversationHistory(
   conversationId,
   limit = 10
 ) {
-  return db.prepare(`
-    SELECT
-      sender_id,
-      content,
-      sent_at
-    FROM messages
-    WHERE
-      conversation_id = ?
-      AND status = 'sent'
-    ORDER BY id DESC
-    LIMIT ?
-  `).all(
-    conversationId,
-    limit
-  ).reverse();
+  return db
+    .prepare(`
+      SELECT
+        sender_id,
+        content,
+        sent_at
+      FROM messages
+      WHERE
+        conversation_id = ?
+        AND status = 'sent'
+      ORDER BY id DESC
+      LIMIT ?
+    `)
+    .all(
+      conversationId,
+      limit
+    )
+    .reverse();
 }
 
 // =====================================================
@@ -778,11 +832,12 @@ function reserveAction(
   actionKey,
   userId
 ) {
-  const existing = db.prepare(`
-    SELECT *
-    FROM processed_actions
-    WHERE action_key = ?
-  `).get(actionKey);
+  const existing =
+    db.prepare(`
+      SELECT *
+      FROM processed_actions
+      WHERE action_key = ?
+    `).get(actionKey);
 
   if (!existing) {
     try {
@@ -811,10 +866,11 @@ function reserveAction(
       return true;
     } catch (error) {
       if (
-        safeErrorMessage(error)
-          .includes(
-            'UNIQUE constraint failed'
-          )
+        safeErrorMessage(
+          error
+        ).includes(
+          'UNIQUE constraint failed'
+        )
       ) {
         return false;
       }
@@ -824,37 +880,39 @@ function reserveAction(
   }
 
   if (
-    existing.status === 'completed'
+    existing.status ===
+    'completed'
   ) {
     return false;
   }
 
-  const reusable = db.prepare(`
-    UPDATE processed_actions
-    SET
-      status = 'reserved',
-      user_id = ?,
-      locked_until =
-        datetime('now', '+60 seconds'),
-      updated_at = CURRENT_TIMESTAMP
-    WHERE
-      action_key = ?
-      AND (
-        status = 'failed'
-        OR (
-          status = 'reserved'
-          AND (
-            locked_until IS NULL
-            OR locked_until <= CURRENT_TIMESTAMP
+  const updated =
+    db.prepare(`
+      UPDATE processed_actions
+      SET
+        status = 'reserved',
+        user_id = ?,
+        locked_until =
+          datetime('now', '+60 seconds'),
+        updated_at = CURRENT_TIMESTAMP
+      WHERE
+        action_key = ?
+        AND (
+          status = 'failed'
+          OR (
+            status = 'reserved'
+            AND (
+              locked_until IS NULL
+              OR locked_until <= CURRENT_TIMESTAMP
+            )
           )
         )
-      )
-  `).run(
-    userId,
-    actionKey
-  );
+    `).run(
+      userId,
+      actionKey
+    );
 
-  return reusable.changes > 0;
+  return updated.changes > 0;
 }
 
 function linkActionToMessage(
@@ -903,7 +961,9 @@ function failAction(
   `).run(actionKey);
 }
 
-function getAction(actionKey) {
+function getAction(
+  actionKey
+) {
   if (!actionKey) return null;
 
   return db.prepare(`
@@ -934,15 +994,14 @@ function saveSession(
 
   if (!channelId || !messageId) {
     throw new Error(
-      'channelId and messageId are required'
+      'Invalid session message reference'
     );
   }
 
-  const jsonData = data
-    ? JSON.stringify(data)
-    : null;
+  const jsonData =
+    data ? JSON.stringify(data) : null;
 
-  const save = db.transaction(() => {
+  db.transaction(() => {
     db.prepare(`
       DELETE FROM active_sessions
       WHERE user_id = ?
@@ -964,16 +1023,14 @@ function saveSession(
       )
     `).run(
       userId,
-      channelId,
-      messageId,
+      String(channelId),
+      String(messageId),
       state,
       jsonData,
       requestId,
       notifiedAt
     );
-  });
-
-  save();
+  })();
 }
 
 function updateSessionData(
@@ -982,10 +1039,6 @@ function updateSessionData(
   data,
   notifiedAt = null
 ) {
-  const jsonData = data
-    ? JSON.stringify(data)
-    : null;
-
   db.prepare(`
     UPDATE active_sessions
     SET
@@ -996,7 +1049,9 @@ function updateSessionData(
     WHERE user_id = ?
   `).run(
     state,
-    jsonData,
+    data
+      ? JSON.stringify(data)
+      : null,
     notifiedAt,
     userId
   );
@@ -1039,221 +1094,10 @@ function getAllSessions() {
 }
 
 // =====================================================
-// UI
+// MEMBER CACHE / SEARCH
 // =====================================================
 
-function buildPseudoPanel(
-  targetDisplayName,
-  targetId,
-  requestId
-) {
-  const embed =
-    new EmbedBuilder()
-      .setColor(0x6C2BD9)
-      .setImage(BANNER_URL)
-      .setTitle(
-        '🌙 Choose Your Identity'
-      )
-      .setDescription(
-        `You are about to message **${targetDisplayName}**.\n\n` +
-        'Select a name for this conversation.'
-      )
-      .addFields({
-        name: '💬 Quote',
-        value: getRandomQuote(),
-        inline: false
-      })
-      .setFooter({
-        text:
-          'Vegas Whispers • Your identity is safe'
-      })
-      .setTimestamp();
-
-  const row =
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(
-          `pseudo_${targetId}_${requestId}_shadow`
-        )
-        .setLabel('👤 Shadow')
-        .setStyle(
-          ButtonStyle.Secondary
-        ),
-
-      new ButtonBuilder()
-        .setCustomId(
-          `pseudo_${targetId}_${requestId}_admirer`
-        )
-        .setLabel('❤️ Secret Admirer')
-        .setStyle(
-          ButtonStyle.Danger
-        ),
-
-      new ButtonBuilder()
-        .setCustomId(
-          `pseudo_${targetId}_${requestId}_friendly`
-        )
-        .setLabel('🤝 Friendly Curious')
-        .setStyle(
-          ButtonStyle.Success
-        )
-    );
-
-  return {
-    embed,
-    row
-  };
-}
-
-function buildWritingPanel(
-  targetDisplayName,
-  targetId,
-  requestId
-) {
-  const embed =
-    new EmbedBuilder()
-      .setColor(0x6C2BD9)
-      .setImage(BANNER_URL)
-      .setTitle(
-        `💌 A secret for ${targetDisplayName}...`
-      )
-      .setDescription(
-        '✍️ Write your message below.\n\n' +
-        '**Rules:**\n' +
-        '• Max **3 paragraphs**\n' +
-        '• Max **2000 characters**'
-      )
-      .addFields({
-        name: '💬 Quote',
-        value: getRandomQuote(),
-        inline: false
-      })
-      .setFooter({
-        text:
-          'Vegas Whispers • Your identity is safe'
-      })
-      .setTimestamp();
-
-  const row =
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(
-          `open_modal_${targetId}_${requestId}`
-        )
-        .setLabel(
-          '✍️ Write Message'
-        )
-        .setStyle(
-          ButtonStyle.Primary
-        )
-    );
-
-  return {
-    embed,
-    row
-  };
-}
-
-async function buildAndSendWhisperEmbed(
-  message,
-  conversation
-) {
-  const pseudo =
-    getUserPseudo(
-      conversation,
-      message.sender_id
-    ) || 'Anonymous';
-
-  const previous =
-    message.previous_message_id
-      ? getMessageById(
-          message.previous_message_id
-        )
-      : null;
-
-  const embed =
-    new EmbedBuilder()
-      .setColor(0x6C2BD9)
-      .setImage(BANNER_URL)
-      .setAuthor({
-        name: `💬 ${pseudo}`
-      })
-      .setDescription(
-        message.content || ''
-      )
-      .setFooter({
-        text:
-          'Vegas Whispers'
-      })
-      .setTimestamp();
-
-  if (previous) {
-    const previousPseudo =
-      getUserPseudo(
-        conversation,
-        previous.sender_id
-      ) || 'Anonymous';
-
-    const preview =
-      (previous.content || '')
-        .length > 100
-        ? `${previous.content.slice(0, 100)}...`
-        : (previous.content || '');
-
-    embed.addFields({
-      name:
-        '📜 Previous message',
-      value:
-        `**${previousPseudo}:** ${preview}`
-    });
-  }
-
-  const row =
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(
-          `reply_${message.id}`
-        )
-        .setLabel('💬 Reply')
-        .setStyle(
-          ButtonStyle.Primary
-        ),
-
-      new ButtonBuilder()
-        .setCustomId(
-          `block_${conversation.id}`
-        )
-        .setLabel(
-          '🚫 Block Sender'
-        )
-        .setStyle(
-          ButtonStyle.Danger
-        ),
-
-      new ButtonBuilder()
-        .setCustomId(
-          `history_${conversation.id}`
-        )
-        .setLabel(
-          '📜 History'
-        )
-        .setStyle(
-          ButtonStyle.Secondary
-        )
-    );
-
-  return {
-    embeds: [embed],
-    components: [row]
-  };
-}
-
-// =====================================================
-// MEMBER SEARCH
-// =====================================================
-
-const memberCache =
-  new Map();
+const memberCache = new Map();
 
 async function getCachedMembers(
   interaction
@@ -1268,17 +1112,15 @@ async function getCachedMembers(
   const now =
     Date.now();
 
-  const cacheEntry =
-    memberCache.get(
-      guildId
-    );
+  const cached =
+    memberCache.get(guildId);
 
   if (
-    cacheEntry &&
-    now - cacheEntry.lastUpdated <
+    cached &&
+    now - cached.lastUpdated <
       60000
   ) {
-    return cacheEntry.members;
+    return cached.members;
   }
 
   try {
@@ -1316,9 +1158,7 @@ async function getCachedMembers(
       safeErrorMessage(error)
     );
 
-    return (
-      cacheEntry?.members || []
-    );
+    return cached?.members || [];
   }
 }
 
@@ -1328,7 +1168,7 @@ async function resolveTargetMember(
 ) {
   if (!interaction.guild) {
     throw new Error(
-      'This command must be used in a server.'
+      'Use `/whisper` inside a server.'
     );
   }
 
@@ -1344,9 +1184,7 @@ async function resolveTargetMember(
   const member =
     await interaction.guild.members
       .fetch(targetId)
-      .catch(
-        () => null
-      );
+      .catch(() => null);
 
   if (!member) {
     throw new Error(
@@ -1363,8 +1201,406 @@ async function resolveTargetMember(
   return member;
 }
 
+function searchMembers(
+  members,
+  query
+) {
+  const normalized =
+    query
+      .trim()
+      .toLowerCase();
+
+  if (!normalized) {
+    return members.slice(0, 25);
+  }
+
+  return members
+    .filter(member =>
+      member.displayName
+        .toLowerCase()
+        .includes(normalized) ||
+      member.username
+        .toLowerCase()
+        .includes(normalized) ||
+      member.id.includes(normalized)
+    )
+    .slice(0, 25);
+}
+
 // =====================================================
-// DELIVERY
+// UI BUILDERS
+// =====================================================
+
+function buildMainPanel(
+  requestId,
+  members,
+  searchQuery = ''
+) {
+  const embed =
+    new EmbedBuilder()
+      .setColor(0x6C2BD9)
+      .setImage(BANNER_URL)
+      .setTitle(
+        '💋 Vegas Whispers'
+      )
+      .setDescription(
+        'Choose the person who deserves your whisper.\\n\\n' +
+        '🔎 Search by **name, nickname or ID**, then select the member below.'
+      )
+      .addFields({
+        name:
+          '💬 Quote',
+        value:
+          getRandomQuote(),
+        inline:
+          false
+      })
+      .setFooter({
+        text:
+          'Vegas Whispers • Your identity is safe'
+      })
+      .setTimestamp();
+
+  if (searchQuery) {
+    embed.addFields({
+      name:
+        '🔎 Current search',
+      value:
+        `\`${searchQuery.slice(0, 100)}\``,
+      inline:
+        false
+    });
+  }
+
+  const selectedMembers =
+    searchMembers(
+      members,
+      searchQuery
+    );
+
+  const components = [];
+
+  const searchRow =
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            `search_member_${requestId}`
+          )
+          .setLabel(
+            '🔎 Search Member'
+          )
+          .setStyle(
+            ButtonStyle.Primary
+          )
+      );
+
+  components.push(searchRow);
+
+  if (selectedMembers.length > 0) {
+    const select =
+      new StringSelectMenuBuilder()
+        .setCustomId(
+          `recipient_${requestId}`
+        )
+        .setPlaceholder(
+          searchQuery
+            ? 'Select a search result...'
+            : 'Select a member...'
+        )
+        .addOptions(
+          selectedMembers.map(
+            member =>
+              new StringSelectMenuOptionBuilder()
+                .setLabel(
+                  (
+                    member.displayName ||
+                    member.username
+                  ).slice(
+                    0,
+                    100
+                  )
+                )
+                .setDescription(
+                  `@${member.username}`.slice(
+                    0,
+                    100
+                  )
+                )
+                .setValue(
+                  member.id
+                )
+          )
+        );
+
+    components.push(
+      new ActionRowBuilder()
+        .addComponents(
+          select
+        )
+    );
+  }
+
+  const cancelRow =
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            `cancel_whisper_${requestId}`
+          )
+          .setLabel(
+            'Cancel'
+          )
+          .setStyle(
+            ButtonStyle.Secondary
+          )
+      );
+
+  components.push(
+    cancelRow
+  );
+
+  return {
+    embed,
+    components
+  };
+}
+
+function buildPseudoPanel(
+  targetDisplayName,
+  targetId,
+  requestId
+) {
+  const embed =
+    new EmbedBuilder()
+      .setColor(0x6C2BD9)
+      .setImage(BANNER_URL)
+      .setTitle(
+        '🌙 Choose Your Identity'
+      )
+      .setDescription(
+        `You are about to whisper to **${targetDisplayName}**.\\n\\n` +
+        'Choose one identity for this conversation.'
+      )
+      .addFields({
+        name:
+          '💬 Quote',
+        value:
+          getRandomQuote(),
+        inline:
+          false
+      })
+      .setFooter({
+        text:
+          'Vegas Whispers • Your identity is safe'
+      })
+      .setTimestamp();
+
+  const row =
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            `pseudo_${targetId}_${requestId}_shadow`
+          )
+          .setLabel(
+            '👤 Shadow'
+          )
+          .setStyle(
+            ButtonStyle.Secondary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            `pseudo_${targetId}_${requestId}_admirer`
+          )
+          .setLabel(
+            '❤️ Secret Admirer'
+          )
+          .setStyle(
+            ButtonStyle.Danger
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            `pseudo_${targetId}_${requestId}_friendly`
+          )
+          .setLabel(
+            '🤝 Friendly Curious'
+          )
+          .setStyle(
+            ButtonStyle.Success
+          )
+      );
+
+  return {
+    embed,
+    components: [row]
+  };
+}
+
+function buildMessagePanel(
+  targetDisplayName,
+  targetId,
+  requestId
+) {
+  const embed =
+    new EmbedBuilder()
+      .setColor(0x6C2BD9)
+      .setImage(BANNER_URL)
+      .setTitle(
+        `💌 A secret for ${targetDisplayName}...`
+      )
+      .setDescription(
+        '✍️ Write your anonymous message.\\n\\n' +
+        '**Rules:**\\n' +
+        '• Maximum **3 paragraphs**\\n' +
+        '• Maximum **2000 characters**'
+      )
+      .addFields({
+        name:
+          '💬 Quote',
+        value:
+          getRandomQuote(),
+        inline:
+          false
+      })
+      .setFooter({
+        text:
+          'Vegas Whispers • Your identity is safe'
+      })
+      .setTimestamp();
+
+  const row =
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            `open_modal_${targetId}_${requestId}`
+          )
+          .setLabel(
+            '✍️ Write Message'
+          )
+          .setStyle(
+            ButtonStyle.Primary
+          )
+      );
+
+  return {
+    embed,
+    components: [row]
+  };
+}
+
+async function buildAndSendWhisper(
+  message,
+  conversation
+) {
+  const pseudo =
+    getUserPseudo(
+      conversation,
+      message.sender_id
+    ) || 'Anonymous';
+
+  const previous =
+    message.previous_message_id
+      ? getMessageById(
+          message.previous_message_id
+        )
+      : null;
+
+  const embed =
+    new EmbedBuilder()
+      .setColor(0x6C2BD9)
+      .setImage(BANNER_URL)
+      .setAuthor({
+        name:
+          `💬 ${pseudo}`
+      })
+      .setDescription(
+        message.content ||
+          ''
+      )
+      .setFooter({
+        text:
+          `Vegas Whispers • Message #${message.id}`
+      })
+      .setTimestamp();
+
+  if (previous) {
+    const previousPseudo =
+      getUserPseudo(
+        conversation,
+        previous.sender_id
+      ) ||
+      'Anonymous';
+
+    const preview =
+      (previous.content || '')
+        .length > 100
+        ? `${previous.content.slice(0, 100)}...`
+        : previous.content || '';
+
+    embed.addFields({
+      name:
+        '📜 Previous message',
+      value:
+        `**${previousPseudo}:** ${preview}`
+    });
+  }
+
+  const row =
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            `reply_${message.id}`
+          )
+          .setLabel(
+            '💬 Reply'
+          )
+          .setStyle(
+            ButtonStyle.Primary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            `block_${conversation.id}`
+          )
+          .setLabel(
+            '🚫 Block Sender'
+          )
+          .setStyle(
+            ButtonStyle.Danger
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            `history_${conversation.id}`
+          )
+          .setLabel(
+            '📜 History'
+          )
+          .setStyle(
+            ButtonStyle.Secondary
+          )
+      );
+
+  const target =
+    await client.users.fetch(
+      message.receiver_id
+    );
+
+  return target.send({
+    content:
+      '👋 **You received a whisper:**',
+    embeds: [embed],
+    components: [row]
+  });
+}
+
+// =====================================================
+// DELIVERY / RECOVERY
 // =====================================================
 
 async function findExistingDiscordDelivery(
@@ -1377,39 +1613,38 @@ async function findExistingDiscordDelivery(
 
     const recent =
       await dm.messages.fetch({
-        limit: 50
+        limit:
+          50
       });
 
-    const expectedReplyId =
+    const expected =
       `reply_${message.id}`;
 
-    const found =
-      recent.find(
-        dmMessage => {
-          if (
-            dmMessage.author?.id !==
-            client.user?.id
-          ) {
-            return false;
-          }
-
-          return (
-            dmMessage.components?.some(
-              row =>
-                row.components?.some(
-                  component =>
-                    component.customId ===
-                    expectedReplyId
-                )
-            ) || false
-          );
+    return recent.find(
+      dmMessage => {
+        if (
+          dmMessage.author?.id !==
+          client.user?.id
+        ) {
+          return false;
         }
-      );
 
-    return found || null;
+        return (
+          dmMessage.components?.some(
+            row =>
+              row.components?.some(
+                component =>
+                  component.customId ===
+                  expected
+              )
+          ) ||
+          false
+        );
+      }
+    ) || null;
   } catch (error) {
     console.error(
-      `⚠️ Could not check existing delivery for ${message.id}:`,
+      `⚠️ Delivery reconciliation failed for #${message.id}:`,
       safeErrorMessage(error)
     );
 
@@ -1436,7 +1671,8 @@ async function deliverMessageById(
     'sent'
   ) {
     return {
-      status: 'sent',
+      status:
+        'sent',
       discordMessageId:
         message.discord_message_id
     };
@@ -1447,12 +1683,14 @@ async function deliverMessageById(
     'failed'
   ) {
     return {
-      status: 'failed'
+      status:
+        'failed'
     };
   }
 
   if (
-    (message.attempts || 0) >= 3
+    message.attempts >=
+    3
   ) {
     markMessageFailed(
       message.id
@@ -1463,7 +1701,8 @@ async function deliverMessageById(
     );
 
     return {
-      status: 'failed'
+      status:
+        'failed'
     };
   }
 
@@ -1487,12 +1726,13 @@ async function deliverMessageById(
     );
 
     return {
-      status: 'failed'
+      status:
+        'failed'
     };
   }
 
-  // Vérifier si le DM a déjà
-  // été envoyé avant un crash.
+  // Reconciliation:
+  // Discord may have received the DM before the process crashed.
   const existing =
     await findExistingDiscordDelivery(
       message,
@@ -1510,10 +1750,12 @@ async function deliverMessageById(
     );
 
     return {
-      status: 'sent',
+      status:
+        'sent',
       discordMessageId:
         existing.id,
-      reconciled: true
+      reconciled:
+        true
     };
   }
 
@@ -1523,18 +1765,11 @@ async function deliverMessageById(
     );
 
   try {
-    const payload =
-      await buildAndSendWhisperEmbed(
+    const sent =
+      await buildAndSendWhisper(
         message,
         conversation
       );
-
-    const sent =
-      await target.send({
-        content:
-          '👋 **You received a whisper:**',
-        ...payload
-      });
 
     markMessageSent(
       message.id,
@@ -1550,7 +1785,8 @@ async function deliverMessageById(
     );
 
     return {
-      status: 'sent',
+      status:
+        'sent',
       discordMessageId:
         sent.id
     };
@@ -1561,7 +1797,8 @@ async function deliverMessageById(
     );
 
     if (
-      attempts >= 3
+      attempts >=
+      3
     ) {
       markMessageFailed(
         message.id
@@ -1572,14 +1809,15 @@ async function deliverMessageById(
       );
 
       return {
-        status: 'failed'
+        status:
+          'failed'
       };
     }
 
     return {
-      status: 'pending',
-      attempts,
-      error
+      status:
+        'pending',
+      attempts
     };
   }
 }
@@ -1596,7 +1834,9 @@ async function retryPendingMessages() {
     `🔄 Checking ${pending.length} pending message(s)...`
   );
 
-  for (const message of pending) {
+  for (
+    const message of pending
+  ) {
     try {
       const result =
         await deliverMessageById(
@@ -1604,8 +1844,10 @@ async function retryPendingMessages() {
         );
 
       if (
-        result.status === 'sent' ||
-        result.status === 'failed'
+        result.status ===
+          'sent' ||
+        result.status ===
+          'failed'
       ) {
         deleteSessionByRequestId(
           message.request_id
@@ -1613,7 +1855,7 @@ async function retryPendingMessages() {
       }
     } catch (error) {
       console.error(
-        `❌ Pending message #${message.id}:`,
+        `❌ Pending #${message.id}:`,
         safeErrorMessage(error)
       );
     }
@@ -1621,7 +1863,7 @@ async function retryPendingMessages() {
 }
 
 // =====================================================
-// SESSION NOTIFICATION
+// NOTIFY SESSIONS
 // =====================================================
 
 async function notifyUnfinishedSessions() {
@@ -1635,7 +1877,13 @@ async function notifyUnfinishedSessions() {
     return;
   }
 
-  for (const session of sessions) {
+  console.log(
+    `🔄 Notifying ${sessions.length} unfinished session(s)...`
+  );
+
+  for (
+    const session of sessions
+  ) {
     try {
       const user =
         await client.users.fetch(
@@ -1666,154 +1914,6 @@ async function notifyUnfinishedSessions() {
 // RECOVERY
 // =====================================================
 
-async function recoverDeliverySession(
-  interaction,
-  session,
-  data
-) {
-  let message =
-    data.messageId
-      ? getMessageById(
-          data.messageId
-        )
-      : null;
-
-  if (
-    !message &&
-    session.request_id
-  ) {
-    message =
-      getMessageByRequestId(
-        session.request_id
-      );
-  }
-
-  if (
-    !message &&
-    data.actionKey
-  ) {
-    const action =
-      getAction(
-        data.actionKey
-      );
-
-    if (
-      action?.message_id
-    ) {
-      message =
-        getMessageById(
-          action.message_id
-        );
-    }
-  }
-
-  if (!message) {
-    deleteSession(
-      interaction.user.id
-    );
-
-    await interaction.editReply({
-      content:
-        '❌ No recoverable message was found. Please use `/whisper` again.'
-    });
-
-    return false;
-  }
-
-  if (
-    message.status ===
-    'sent'
-  ) {
-    completeAction(
-      message.action_key
-    );
-
-    deleteSession(
-      interaction.user.id
-    );
-
-    await interaction.editReply({
-      content:
-        '✅ The whisper was already delivered.'
-    });
-
-    return true;
-  }
-
-  if (
-    message.status ===
-    'failed'
-  ) {
-    deleteSession(
-      interaction.user.id
-    );
-
-    await interaction.editReply({
-      content:
-        '❌ Delivery failed. Please use `/whisper` again.'
-    });
-
-    return false;
-  }
-
-  const result =
-    await deliverMessageById(
-      message.id
-    );
-
-  if (
-    result.status ===
-    'sent'
-  ) {
-    deleteSession(
-      interaction.user.id
-    );
-
-    await interaction.editReply({
-      content:
-        '✅ Pending whisper delivered successfully.'
-    });
-
-    return true;
-  }
-
-  if (
-    result.status ===
-    'failed'
-  ) {
-    deleteSession(
-      interaction.user.id
-    );
-
-    await interaction.editReply({
-      content:
-        '❌ Delivery failed after the maximum number of attempts.'
-    });
-
-    return false;
-  }
-
-  updateSessionData(
-    interaction.user.id,
-    'delivery_pending',
-    {
-      ...data,
-      messageId:
-        message.id,
-      actionKey:
-        message.action_key
-    },
-    session.notified_at
-  );
-
-  await interaction.editReply({
-    content:
-      `⏳ Delivery still pending. Attempts: ${result.attempts || message.attempts}/3.`
-  });
-
-  return true;
-}
-
 async function recoverSession(
   interaction,
   session
@@ -1823,9 +1923,7 @@ async function recoverSession(
       session
     );
 
-  if (
-    data === null
-  ) {
+  if (!data) {
     deleteSession(
       interaction.user.id
     );
@@ -1848,7 +1946,7 @@ async function recoverSession(
 
     await interaction.editReply({
       content:
-        '❌ Session is missing its request ID.'
+        '❌ Session request ID is missing.'
     });
 
     return false;
@@ -1858,71 +1956,17 @@ async function recoverSession(
     session.state ===
     'selecting_recipient'
   ) {
-    return showMainMenu(
+    return renderMainPanel(
       interaction,
-      requestId
+      requestId,
+      data.searchQuery || ''
     );
   }
 
   if (
     session.state ===
-    'writing_message' &&
-    data.targetId
-  ) {
-    try {
-      const target =
-        await client.users.fetch(
-          data.targetId
-        );
-
-      const panel =
-        buildWritingPanel(
-          data.targetDisplayName ||
-            target.username,
-          data.targetId,
-          requestId
-        );
-
-      const reply =
-        await interaction.editReply({
-          embeds: [
-            panel.embed
-          ],
-          components: [
-            panel.row
-          ]
-        });
-
-      saveSession(
-        interaction.user.id,
-        interaction.channel.id,
-        reply.id,
-        'writing_message',
-        data,
-        requestId,
-        session.notified_at
-      );
-
-      return true;
-    } catch {
-      deleteSession(
-        interaction.user.id
-      );
-
-      await interaction.editReply({
-        content:
-          '❌ Target user not found.'
-      });
-
-      return false;
-    }
-  }
-
-  if (
-    session.state ===
     'choosing_pseudo' &&
-    data.targetId &&
-    data.messageContent
+    data.targetId
   ) {
     try {
       const target =
@@ -1940,12 +1984,10 @@ async function recoverSession(
 
       const reply =
         await interaction.editReply({
-          embeds: [
-            panel.embed
-          ],
-          components: [
-            panel.row
-          ]
+          embeds:
+            [panel.embed],
+          components:
+            panel.components
         });
 
       saveSession(
@@ -1975,7 +2017,109 @@ async function recoverSession(
 
   if (
     session.state ===
-    'reply_writing' &&
+    'writing_message' &&
+    data.targetId
+  ) {
+    try {
+      const target =
+        await client.users.fetch(
+          data.targetId
+        );
+
+      const panel =
+        buildMessagePanel(
+          data.targetDisplayName ||
+            target.username,
+          data.targetId,
+          requestId
+        );
+
+      const reply =
+        await interaction.editReply({
+          embeds:
+            [panel.embed],
+          components:
+            panel.components
+        });
+
+      saveSession(
+        interaction.user.id,
+        interaction.channel.id,
+        reply.id,
+        'writing_message',
+        data,
+        requestId,
+        session.notified_at
+      );
+
+      return true;
+    } catch {
+      deleteSession(
+        interaction.user.id
+      );
+
+      await interaction.editReply({
+        content:
+          '❌ Target user not found.'
+      });
+
+      return false;
+    }
+  }
+
+  if (
+    session.state ===
+      'delivery_pending' &&
+    data.messageId
+  ) {
+    const result =
+      await deliverMessageById(
+        data.messageId
+      );
+
+    if (
+      result.status ===
+      'sent'
+    ) {
+      deleteSession(
+        interaction.user.id
+      );
+
+      await interaction.editReply({
+        content:
+          '✅ Pending whisper delivered successfully.'
+      });
+
+      return true;
+    }
+
+    if (
+      result.status ===
+      'failed'
+    ) {
+      deleteSession(
+        interaction.user.id
+      );
+
+      await interaction.editReply({
+        content:
+          '❌ Delivery failed.'
+      });
+
+      return false;
+    }
+
+    await interaction.editReply({
+      content:
+        `⏳ Delivery is still pending. Attempts: ${result.attempts || 0}/3.`
+    });
+
+    return true;
+  }
+
+  if (
+    session.state ===
+      'reply_writing' &&
     data.originalMessageId
   ) {
     const original =
@@ -2018,24 +2162,11 @@ async function recoverSession(
     await interaction.editReply({
       content:
         '🔁 Your reply session was recovered.',
-      components: [row],
-      embeds: []
+      embeds: [],
+      components: [row]
     });
 
     return true;
-  }
-
-  if (
-    session.state ===
-      'sending_message' ||
-    session.state ===
-      'delivery_pending'
-  ) {
-    return recoverDeliverySession(
-      interaction,
-      session,
-      data
-    );
   }
 
   deleteSession(
@@ -2044,35 +2175,21 @@ async function recoverSession(
 
   await interaction.editReply({
     content:
-      '❌ No recoverable action found.'
+      '❌ No recoverable session found.'
   });
 
   return false;
 }
 
 // =====================================================
-// MAIN MENU
+// MAIN PANEL
 // =====================================================
 
-async function showMainMenu(
+async function renderMainPanel(
   interaction,
-  requestId = null
+  requestId,
+  searchQuery = ''
 ) {
-  if (!interaction.guild) {
-    await interaction.editReply({
-      content:
-        '❌ Use `/whisper` inside a server.',
-      embeds: [],
-      components: []
-    });
-
-    return false;
-  }
-
-  const stableRequestId =
-    requestId ||
-    crypto.randomUUID();
-
   const members =
     await getCachedMembers(
       interaction
@@ -2081,7 +2198,7 @@ async function showMainMenu(
   if (!members.length) {
     await interaction.editReply({
       content:
-        '❌ No members found.',
+        '❌ No members found in this server.',
       embeds: [],
       components: []
     });
@@ -2089,85 +2206,19 @@ async function showMainMenu(
     return false;
   }
 
-  const embed =
-    new EmbedBuilder()
-      .setColor(0x6C2BD9)
-      .setImage(BANNER_URL)
-      .setTitle(
-        '💋 Who deserves your whisper?'
-      )
-      .setDescription(
-        'Select a server member to send an anonymous message to.'
-      )
-      .addFields({
-        name:
-          '💬 Quote',
-        value:
-          getRandomQuote(),
-        inline: false
-      })
-      .setFooter({
-        text:
-          'Vegas Whispers • Your identity is safe'
-      })
-      .setTimestamp();
-
-  const select =
-    new StringSelectMenuBuilder()
-      .setCustomId(
-        `select_recipient_${stableRequestId}`
-      )
-      .setPlaceholder(
-        'Choose a member...'
-      )
-      .addOptions(
-        members
-          .slice(0, 25)
-          .map(member =>
-            new StringSelectMenuOptionBuilder()
-              .setLabel(
-                (
-                  member.displayName ||
-                  member.username
-                ).slice(
-                  0,
-                  100
-                )
-              )
-              .setValue(
-                member.id
-              )
-          )
-      );
-
-  const selectRow =
-    new ActionRowBuilder()
-      .addComponents(
-        select
-      );
-
-  const cancelRow =
-    new ActionRowBuilder()
-      .addComponents(
-        new ButtonBuilder()
-          .setCustomId(
-            `cancel_whisper_${stableRequestId}`
-          )
-          .setLabel(
-            'Cancel'
-          )
-          .setStyle(
-            ButtonStyle.Secondary
-          )
-      );
+  const panel =
+    buildMainPanel(
+      requestId,
+      members,
+      searchQuery
+    );
 
   const reply =
     await interaction.editReply({
-      embeds: [embed],
-      components: [
-        selectRow,
-        cancelRow
-      ]
+      embeds:
+        [panel.embed],
+      components:
+        panel.components
     });
 
   saveSession(
@@ -2177,16 +2228,17 @@ async function showMainMenu(
     'selecting_recipient',
     {
       guildId:
-        interaction.guild.id
+        interaction.guild.id,
+      searchQuery
     },
-    stableRequestId
+    requestId
   );
 
   return true;
 }
 
 // =====================================================
-// INTERACTIONS
+// INTERACTION HANDLER
 // =====================================================
 
 client.on(
@@ -2194,75 +2246,13 @@ client.on(
   async interaction => {
     try {
       // =================================================
-      // AUTOCOMPLETE
-      // =================================================
-
-      if (
-        interaction.isAutocomplete()
-      ) {
-        try {
-          const focused =
-            interaction.options
-              .getFocused()
-              .toLowerCase();
-
-          const members =
-            await getCachedMembers(
-              interaction
-            );
-
-          const results =
-            members
-              .filter(member =>
-                member.displayName
-                  .toLowerCase()
-                  .includes(focused) ||
-                member.username
-                  .toLowerCase()
-                  .includes(focused) ||
-                member.id.includes(
-                  focused
-                )
-              )
-              .slice(
-                0,
-                25
-              )
-              .map(member => ({
-                name:
-                  (
-                    member.displayName ||
-                    member.username
-                  ).slice(
-                    0,
-                    100
-                  ),
-                value:
-                  member.id
-              }));
-
-          await interaction.respond(
-            results
-          );
-        } catch {
-          try {
-            await interaction.respond(
-              []
-            );
-          } catch {}
-        }
-
-        return;
-      }
-
-      // =================================================
       // SLASH COMMANDS
       // =================================================
 
       if (
         interaction.isChatInputCommand()
       ) {
-        const commandName =
+        const command =
           interaction.commandName;
 
         // -----------------------------------------------
@@ -2270,14 +2260,14 @@ client.on(
         // -----------------------------------------------
 
         if (
-          commandName ===
+          command ===
           'ping'
         ) {
           await interaction.reply({
             content:
               '🏓 Pong!',
-            ephemeral:
-              true
+            flags:
+              64
           });
 
           return;
@@ -2288,15 +2278,15 @@ client.on(
         // -----------------------------------------------
 
         if (
-          commandName ===
+          command ===
           'whisper'
         ) {
           if (!interaction.guild) {
             await interaction.reply({
               content:
                 '❌ Use `/whisper` inside a server.',
-              ephemeral:
-                true
+              flags:
+                64
             });
 
             return;
@@ -2311,283 +2301,25 @@ client.on(
             await interaction.reply({
               content:
                 '⚠️ You already have an active operation. Finish it or use `/recover`.',
-              ephemeral:
-                true
-            });
-
-            return;
-          }
-
-          const targetId =
-            interaction.options.getString(
-              'target',
-              true
-            );
-
-          const messageContent =
-            interaction.options.getString(
-              'message',
-              true
-            ).trim();
-
-          const paragraphCount =
-            countParagraphs(
-              messageContent
-            );
-
-          if (
-            paragraphCount > 3
-          ) {
-            await interaction.reply({
-              content:
-                `❌ **${paragraphCount} paragraphs** detected. Maximum is 3.`,
-              ephemeral:
-                true
+              flags:
+                64
             });
 
             return;
           }
 
           await interaction.deferReply({
-            ephemeral:
-              true
+            flags:
+              64
           });
-
-          let targetMember;
-
-          try {
-            targetMember =
-              await resolveTargetMember(
-                interaction,
-                targetId
-              );
-          } catch (error) {
-            await interaction.editReply({
-              content:
-                `❌ ${safeErrorMessage(error)}`
-            });
-
-            return;
-          }
-
-          let conversation;
-
-          try {
-            conversation =
-              getOrCreateConversation(
-                interaction.user.id,
-                targetMember.id
-              );
-          } catch (error) {
-            await interaction.editReply({
-              content:
-                safeErrorMessage(error) ===
-                'Conversation is blocked'
-                  ? '❌ This conversation is blocked.'
-                  : '❌ Error creating conversation.'
-            });
-
-            return;
-          }
-
-          const senderPseudo =
-            getUserPseudo(
-              conversation,
-              interaction.user.id
-            );
 
           const requestId =
             interaction.id;
 
-          // ---------------------------------------------
-          // PSEUDO CHOICE
-          // ---------------------------------------------
-
-          if (!senderPseudo) {
-            const panel =
-              buildPseudoPanel(
-                targetMember.displayName,
-                targetMember.id,
-                requestId
-              );
-
-            const reply =
-              await interaction.editReply({
-                embeds: [
-                  panel.embed
-                ],
-                components: [
-                  panel.row
-                ]
-              });
-
-            saveSession(
-              interaction.user.id,
-              interaction.channel.id,
-              reply.id,
-              'choosing_pseudo',
-              {
-                targetId:
-                  targetMember.id,
-                targetDisplayName:
-                  targetMember.displayName,
-                messageContent
-              },
-              requestId
-            );
-
-            return;
-          }
-
-          // ---------------------------------------------
-          // DIRECT SEND
-          // ---------------------------------------------
-
-          const actionKey =
-            `send_${requestId}`;
-
-          if (
-            !reserveAction(
-              actionKey,
-              interaction.user.id
-            )
-          ) {
-            await interaction.editReply({
-              content:
-                '⚠️ This whisper is already being processed.'
-            });
-
-            return;
-          }
-
-          const preparingReply =
-            await interaction.editReply({
-              content:
-                '⏳ Preparing your whisper...'
-            });
-
-          saveSession(
-            interaction.user.id,
-            interaction.channel.id,
-            preparingReply.id,
-            'sending_message',
-            {
-              targetId:
-                targetMember.id,
-              targetDisplayName:
-                targetMember.displayName,
-              messageContent,
-              actionKey
-            },
+          await renderMainPanel(
+            interaction,
             requestId
           );
-
-          let message;
-
-          try {
-            const transaction =
-              db.transaction(() => {
-                const currentConversation =
-                  getOrCreateConversation(
-                    interaction.user.id,
-                    targetMember.id
-                  );
-
-                const created =
-                  createPendingMessage({
-                    conversationId:
-                      currentConversation.id,
-                    senderId:
-                      interaction.user.id,
-                    receiverId:
-                      targetMember.id,
-                    content:
-                      messageContent,
-                    requestId,
-                    actionKey
-                  });
-
-                linkActionToMessage(
-                  actionKey,
-                  created.id
-                );
-
-                updateSessionData(
-                  interaction.user.id,
-                  'delivery_pending',
-                  {
-                    targetId:
-                      targetMember.id,
-                    targetDisplayName:
-                      targetMember.displayName,
-                    messageContent,
-                    actionKey,
-                    messageId:
-                      created.id
-                  }
-                );
-
-                return created;
-              });
-
-            message =
-              transaction();
-          } catch (error) {
-            failAction(
-              actionKey
-            );
-
-            deleteSession(
-              interaction.user.id
-            );
-
-            await interaction.editReply({
-              content:
-                '❌ Error saving message. Please try again.'
-            });
-
-            return;
-          }
-
-          const result =
-            await deliverMessageById(
-              message.id
-            );
-
-          if (
-            result.status ===
-            'sent'
-          ) {
-            deleteSession(
-              interaction.user.id
-            );
-
-            await interaction.editReply({
-              content:
-                `✅ **Sent!** ${messageContent.length} characters • ${paragraphCount} paragraphs`
-            });
-
-            await showMainMenu(
-              interaction
-            );
-          } else if (
-            result.status ===
-            'failed'
-          ) {
-            deleteSession(
-              interaction.user.id
-            );
-
-            await interaction.editReply({
-              content:
-                '❌ Message could not be delivered.'
-            });
-          } else {
-            await interaction.editReply({
-              content:
-                `⏳ Message saved. Delivery is pending (${result.attempts}/3). Use \`/recover\` to retry.`
-            });
-          }
 
           return;
         }
@@ -2597,7 +2329,7 @@ client.on(
         // -----------------------------------------------
 
         if (
-          commandName ===
+          command ===
           'admin'
         ) {
           if (
@@ -2609,16 +2341,16 @@ client.on(
             await interaction.reply({
               content:
                 '❌ Admin only.',
-              ephemeral:
-                true
+              flags:
+                64
             });
 
             return;
           }
 
           await interaction.deferReply({
-            ephemeral:
-              true
+            flags:
+              64
           });
 
           const messageId =
@@ -2714,9 +2446,8 @@ client.on(
                 .setTimestamp();
 
             await interaction.editReply({
-              embeds: [
-                embed
-              ]
+              embeds:
+                [embed]
             });
           } catch {
             await interaction.editReply({
@@ -2733,12 +2464,12 @@ client.on(
         // -----------------------------------------------
 
         if (
-          commandName ===
+          command ===
           'recover'
         ) {
           await interaction.deferReply({
-            ephemeral:
-              true
+            flags:
+              64
           });
 
           const session =
@@ -2765,66 +2496,19 @@ client.on(
       }
 
       // =================================================
-      // PSEUDO BUTTON
+      // SEARCH MEMBER
       // =================================================
 
       if (
         interaction.isButton() &&
         interaction.customId.startsWith(
-          'pseudo_'
+          'search_member_'
         )
       ) {
-        await interaction.deferUpdate();
-
-        const parts =
+        const requestId =
           interaction.customId.split(
             '_'
-          );
-
-        if (
-          parts.length !== 4
-        ) {
-          await interaction.editReply({
-            content:
-              '❌ Invalid pseudo action.',
-            embeds: [],
-            components: []
-          });
-
-          return;
-        }
-
-        const [
-          ,
-          targetId,
-          requestId,
-          pseudoType
-        ] = parts;
-
-        const pseudoMap = {
-          shadow:
-            'Shadow',
-          admirer:
-            'Secret Admirer',
-          friendly:
-            'Friendly Curious'
-        };
-
-        const pseudo =
-          pseudoMap[
-            pseudoType
-          ];
-
-        if (!pseudo) {
-          await interaction.editReply({
-            content:
-              '❌ Invalid pseudo choice.',
-            embeds: [],
-            components: []
-          });
-
-          return;
-        }
+          )[2];
 
         const session =
           getSession(
@@ -2833,231 +2517,84 @@ client.on(
 
         if (
           !session ||
-          session.user_id !==
-            interaction.user.id ||
           session.request_id !==
             requestId ||
           session.state !==
-            'choosing_pseudo'
+            'selecting_recipient'
         ) {
-          await interaction.editReply({
+          await interaction.reply({
             content:
-              '❌ Invalid or expired session.',
-            embeds: [],
-            components: []
+              '❌ This Vegas Whispers window has expired. Use `/whisper` again.',
+            flags:
+              64
           });
 
           return;
         }
 
-        const data =
-          parseSessionData(
-            session
-          );
+        const modal =
+          new ModalBuilder()
+            .setCustomId(
+              `search_member_modal_${requestId}`
+            )
+            .setTitle(
+              '🔎 Search Member'
+            );
 
-        if (
-          !data ||
-          data.targetId !==
-            targetId ||
-          !data.messageContent
-        ) {
-          await interaction.editReply({
-            content:
-              '❌ Invalid session data.',
-            embeds: [],
-            components: []
-          });
+        const input =
+          new TextInputBuilder()
+            .setCustomId(
+              'member_query'
+            )
+            .setLabel(
+              'Name, nickname or Discord ID'
+            )
+            .setStyle(
+              TextInputStyle.Short
+            )
+            .setPlaceholder(
+              'Example: Alex, Alex123 or 123456789...'
+            )
+            .setRequired(
+              true
+            )
+            .setMaxLength(
+              100
+            );
 
-          deleteSession(
-            interaction.user.id
-          );
+        modal.addComponents(
+          new ActionRowBuilder()
+            .addComponents(
+              input
+            )
+        );
 
-          return;
-        }
-
-        const actionKey =
-          `pseudo_${requestId}`;
-
-        if (
-          !reserveAction(
-            actionKey,
-            interaction.user.id
-          )
-        ) {
-          await interaction.editReply({
-            content:
-              '⚠️ This pseudo selection is already being processed.',
-            embeds: [],
-            components: []
-          });
-
-          return;
-        }
-
-        let message;
-        let conversation;
-
-        try {
-          const transaction =
-            db.transaction(() => {
-              conversation =
-                getOrCreateConversation(
-                  interaction.user.id,
-                  targetId
-                );
-
-              const existingPseudo =
-                getUserPseudo(
-                  conversation,
-                  interaction.user.id
-                );
-
-              if (
-                existingPseudo &&
-                existingPseudo !==
-                  pseudo
-              ) {
-                throw new Error(
-                  'You already chose a pseudo for this conversation.'
-                );
-              }
-
-              if (
-                !existingPseudo
-              ) {
-                const changed =
-                  setUserPseudo(
-                    conversation.id,
-                    interaction.user.id,
-                    pseudo
-                  );
-
-                if (!changed) {
-                  throw new Error(
-                    'Could not save pseudo.'
-                  );
-                }
-              }
-
-              const created =
-                createPendingMessage({
-                  conversationId:
-                    conversation.id,
-                  senderId:
-                    interaction.user.id,
-                  receiverId:
-                    targetId,
-                  content:
-                    data.messageContent,
-                  requestId,
-                  actionKey
-                });
-
-              linkActionToMessage(
-                actionKey,
-                created.id
-              );
-
-              updateSessionData(
-                interaction.user.id,
-                'delivery_pending',
-                {
-                  ...data,
-                  actionKey,
-                  messageId:
-                    created.id,
-                  pseudo
-                }
-              );
-
-              return created;
-            });
-
-          message =
-            transaction();
-        } catch (error) {
-          failAction(
-            actionKey
-          );
-
-          await interaction.editReply({
-            content:
-              `❌ ${safeErrorMessage(error)}`,
-            embeds: [],
-            components: []
-          });
-
-          return;
-        }
-
-        const result =
-          await deliverMessageById(
-            message.id
-          );
-
-        if (
-          result.status ===
-          'sent'
-        ) {
-          deleteSession(
-            interaction.user.id
-          );
-
-          await interaction.editReply({
-            content:
-              `✅ **Sent!** (as ${pseudo})`,
-            embeds: [],
-            components: []
-          });
-
-          await showMainMenu(
-            interaction
-          );
-        } else if (
-          result.status ===
-          'failed'
-        ) {
-          deleteSession(
-            interaction.user.id
-          );
-
-          await interaction.editReply({
-            content:
-              '❌ Message could not be delivered.',
-            embeds: [],
-            components: []
-          });
-        } else {
-          await interaction.editReply({
-            content:
-              `⏳ Message saved. Delivery is pending (${result.attempts}/3).`,
-            embeds: [],
-            components: []
-          });
-        }
+        await interaction.showModal(
+          modal
+        );
 
         return;
       }
 
       // =================================================
-      // RECIPIENT SELECT
+      // SEARCH MEMBER MODAL
       // =================================================
 
       if (
-        interaction.isStringSelectMenu() &&
+        interaction.isModalSubmit() &&
         interaction.customId.startsWith(
-          'select_recipient_'
+          'search_member_modal_'
         )
       ) {
-        await interaction.deferUpdate();
+        await interaction.deferReply({
+          flags:
+            64
+        });
 
         const requestId =
           interaction.customId.split(
             '_'
-          )[2];
-
-        const targetId =
-          interaction.values[0];
+          )[3];
 
         const session =
           getSession(
@@ -3073,7 +2610,83 @@ client.on(
         ) {
           await interaction.editReply({
             content:
-              '❌ Invalid or expired session.',
+              '❌ Search session expired. Use `/whisper` again.'
+          });
+
+          return;
+        }
+
+        const query =
+          interaction.fields
+            .getTextInputValue(
+              'member_query'
+            )
+            .trim();
+
+        const data =
+          parseSessionData(
+            session
+          );
+
+        if (!data) {
+          deleteSession(
+            interaction.user.id
+          );
+
+          await interaction.editReply({
+            content:
+              '❌ Session data is corrupted.'
+          });
+
+          return;
+        }
+
+        await renderMainPanel(
+          interaction,
+          requestId,
+          query
+        );
+
+        return;
+      }
+
+      // =================================================
+      // RECIPIENT SELECT
+      // =================================================
+
+      if (
+        interaction.isStringSelectMenu() &&
+        interaction.customId.startsWith(
+          'recipient_'
+        )
+      ) {
+        await interaction.deferUpdate();
+
+        const requestId =
+          interaction.customId.split(
+            '_'
+          )[1];
+
+        const targetId =
+          interaction.values[0];
+
+        const session =
+          getSession(
+            interaction.user.id
+          );
+
+        if (
+          !session ||
+          session.user_id !==
+            interaction.user.id ||
+          session.request_id !==
+            requestId ||
+          session.state !==
+            'selecting_recipient'
+        ) {
+          await interaction.editReply({
+            content:
+              '❌ This selection has expired. Use `/whisper` again.',
             embeds: [],
             components: []
           });
@@ -3089,7 +2702,7 @@ client.on(
             );
 
           const panel =
-            buildWritingPanel(
+            buildPseudoPanel(
               member.displayName,
               member.id,
               requestId
@@ -3097,20 +2710,20 @@ client.on(
 
           const reply =
             await interaction.editReply({
-              embeds: [
-                panel.embed
-              ],
-              components: [
-                panel.row
-              ]
+              embeds:
+                [panel.embed],
+              components:
+                panel.components
             });
 
           saveSession(
             interaction.user.id,
             interaction.channel.id,
             reply.id,
-            'writing_message',
+            'choosing_pseudo',
             {
+              guildId:
+                interaction.guild.id,
               targetId:
                 member.id,
               targetDisplayName:
@@ -3173,6 +2786,206 @@ client.on(
       }
 
       // =================================================
+      // PSEUDO
+      // =================================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith(
+          'pseudo_'
+        )
+      ) {
+        await interaction.deferUpdate();
+
+        const parts =
+          interaction.customId.split(
+            '_'
+          );
+
+        if (
+          parts.length !==
+          4
+        ) {
+          await interaction.editReply({
+            content:
+              '❌ Invalid pseudo action.',
+            embeds: [],
+            components: []
+          });
+
+          return;
+        }
+
+        const [
+          ,
+          targetId,
+          requestId,
+          pseudoType
+        ] = parts;
+
+        const pseudo =
+          PSEUDOS[
+            pseudoType
+          ];
+
+        if (!pseudo) {
+          await interaction.editReply({
+            content:
+              '❌ Invalid pseudo choice.',
+            embeds: [],
+            components: []
+          });
+
+          return;
+        }
+
+        const session =
+          getSession(
+            interaction.user.id
+          );
+
+        if (
+          !session ||
+          session.user_id !==
+            interaction.user.id ||
+          session.request_id !==
+            requestId ||
+          session.state !==
+            'choosing_pseudo'
+        ) {
+          await interaction.editReply({
+            content:
+              '❌ Invalid or expired session.',
+            embeds: [],
+            components: []
+          });
+
+          return;
+        }
+
+        const data =
+          parseSessionData(
+            session
+          );
+
+        if (
+          !data ||
+          data.targetId !==
+            targetId
+        ) {
+          await interaction.editReply({
+            content:
+              '❌ Session does not match this member.',
+            embeds: [],
+            components: []
+          });
+
+          return;
+        }
+
+        const actionKey =
+          `pseudo_${requestId}`;
+
+        if (
+          !reserveAction(
+            actionKey,
+            interaction.user.id
+          )
+        ) {
+          await interaction.editReply({
+            content:
+              '⚠️ This pseudo selection is already being processed.',
+            embeds: [],
+            components: []
+          });
+
+          return;
+        }
+
+        try {
+          const conversation =
+            getOrCreateConversation(
+              interaction.user.id,
+              targetId
+            );
+
+          const currentPseudo =
+            getUserPseudo(
+              conversation,
+              interaction.user.id
+            );
+
+          if (
+            currentPseudo &&
+            currentPseudo !==
+              pseudo
+          ) {
+            throw new Error(
+              'You already chose a pseudo for this conversation.'
+            );
+          }
+
+          if (!currentPseudo) {
+            const changed =
+              setUserPseudo(
+                conversation.id,
+                interaction.user.id,
+                pseudo
+              );
+
+            if (!changed) {
+              throw new Error(
+                'Could not save pseudo.'
+              );
+            }
+          }
+
+          // SECOND WINDOW = MESSAGE WRITING
+          const panel =
+            buildMessagePanel(
+              data.targetDisplayName,
+              targetId,
+              requestId
+            );
+
+          updateSessionData(
+            interaction.user.id,
+            'writing_message',
+            {
+              ...data,
+              pseudo
+            }
+          );
+
+          completeAction(
+            actionKey
+          );
+
+          await interaction.editReply({
+            content:
+              '',
+            embeds:
+              [panel.embed],
+            components:
+              panel.components
+          });
+        } catch (error) {
+          failAction(
+            actionKey
+          );
+
+          await interaction.editReply({
+            content:
+              `❌ ${safeErrorMessage(error)}`,
+            embeds: [],
+            components: []
+          });
+        }
+
+        return;
+      }
+
+      // =================================================
       // OPEN MESSAGE MODAL
       // =================================================
 
@@ -3188,13 +3001,14 @@ client.on(
           );
 
         if (
-          parts.length !== 4
+          parts.length !==
+          4
         ) {
           await interaction.reply({
             content:
               '❌ Invalid message form.',
-            ephemeral:
-              true
+            flags:
+              64
           });
 
           return;
@@ -3213,6 +3027,8 @@ client.on(
 
         if (
           !session ||
+          session.user_id !==
+            interaction.user.id ||
           session.request_id !==
             requestId ||
           session.state !==
@@ -3220,9 +3036,9 @@ client.on(
         ) {
           await interaction.reply({
             content:
-              '❌ Invalid or expired session. Use `/recover`.',
-            ephemeral:
-              true
+              '❌ This message window has expired. Use `/recover`.',
+            flags:
+              64
           });
 
           return;
@@ -3240,9 +3056,9 @@ client.on(
         ) {
           await interaction.reply({
             content:
-              '❌ Session data does not match this form.',
-            ephemeral:
-              true
+              '❌ Session data does not match the recipient.',
+            flags:
+              64
           });
 
           return;
@@ -3263,13 +3079,13 @@ client.on(
               'message_content'
             )
             .setLabel(
-              'Your message (max 3 paragraphs) *'
+              'Your message (max 3 paragraphs)'
             )
             .setStyle(
               TextInputStyle.Paragraph
             )
             .setPlaceholder(
-              'Type your anonymous message here...'
+              'Write your anonymous message...'
             )
             .setRequired(
               true
@@ -3293,7 +3109,7 @@ client.on(
       }
 
       // =================================================
-      // SEND MESSAGE MODAL
+      // SEND MESSAGE
       // =================================================
 
       if (
@@ -3303,8 +3119,8 @@ client.on(
         )
       ) {
         await interaction.deferReply({
-          ephemeral:
-            true
+          flags:
+            64
         });
 
         const parts =
@@ -3313,7 +3129,8 @@ client.on(
           );
 
         if (
-          parts.length !== 4
+          parts.length !==
+          4
         ) {
           await interaction.editReply({
             content:
@@ -3352,7 +3169,7 @@ client.on(
         ) {
           await interaction.editReply({
             content:
-              '❌ Invalid or expired session. Use `/recover`.'
+              '❌ This message session has expired. Use `/recover`.'
           });
 
           return;
@@ -3370,7 +3187,7 @@ client.on(
         ) {
           await interaction.editReply({
             content:
-              '❌ Modal data does not match the active session.'
+              '❌ Modal does not match the active session.'
           });
 
           return;
@@ -3382,7 +3199,8 @@ client.on(
           );
 
         if (
-          paragraphs > 3
+          paragraphs >
+          3
         ) {
           await interaction.editReply({
             content:
@@ -3438,7 +3256,7 @@ client.on(
         if (!senderPseudo) {
           await interaction.editReply({
             content:
-              '❌ No pseudo has been selected for this conversation.'
+              '❌ No pseudo selected.'
           });
 
           return;
@@ -3455,7 +3273,7 @@ client.on(
         ) {
           await interaction.editReply({
             content:
-              '⚠️ This whisper is already being processed or has already been completed.'
+              '⚠️ This whisper is already being processed.'
           });
 
           return;
@@ -3500,9 +3318,11 @@ client.on(
                   targetDisplayName:
                     targetMember.displayName,
                   messageContent,
-                  actionKey,
+                  pseudo:
+                    senderPseudo,
                   messageId:
-                    created.id
+                    created.id,
+                  actionKey
                 }
               );
 
@@ -3518,7 +3338,7 @@ client.on(
 
           await interaction.editReply({
             content:
-              '❌ Error saving message.'
+              '❌ Error saving the message.'
           });
 
           return;
@@ -3539,13 +3359,13 @@ client.on(
 
           await interaction.editReply({
             content:
-              `✅ **Sent!** (as ${senderPseudo})`
+              `✅ **Sent!** ${messageContent.length} characters • ${paragraphs} paragraph${paragraphs > 1 ? 's' : ''}.`
           });
 
-          await showMainMenu(
-            interaction
-          );
-        } else if (
+          return;
+        }
+
+        if (
           result.status ===
           'failed'
         ) {
@@ -3557,12 +3377,14 @@ client.on(
             content:
               '❌ Message could not be delivered.'
           });
-        } else {
-          await interaction.editReply({
-            content:
-              `⏳ Message saved. Delivery is pending (${result.attempts}/3).`
-          });
+
+          return;
         }
+
+        await interaction.editReply({
+          content:
+            `⏳ Message saved. Delivery is pending (${result.attempts}/3). Use \`/recover\` to retry.`
+        });
 
         return;
       }
@@ -3582,31 +3404,31 @@ client.on(
             '_'
           )[1];
 
-        const originalMessage =
+        const original =
           getMessageById(
             messageId
           );
 
-        if (!originalMessage) {
+        if (!original) {
           await interaction.reply({
             content:
               '❌ Original whisper not found.',
-            ephemeral:
-              true
+            flags:
+              64
           });
 
           return;
         }
 
         if (
-          originalMessage.receiver_id !==
+          original.receiver_id !==
           interaction.user.id
         ) {
           await interaction.reply({
             content:
               '❌ You are not authorized to reply.',
-            ephemeral:
-              true
+            flags:
+              64
           });
 
           return;
@@ -3620,9 +3442,9 @@ client.on(
         if (existing) {
           await interaction.reply({
             content:
-              '⚠️ You already have an active operation. Use `/recover` first.',
-            ephemeral:
-              true
+              '⚠️ You already have an active operation. Use `/recover`.',
+            flags:
+              64
           });
 
           return;
@@ -3631,13 +3453,12 @@ client.on(
         const requestId =
           interaction.id;
 
-        // On garde une valeur toujours valide.
-        // interaction.message.id est utilisé lorsqu'il existe ;
-        // sinon l'ID interne du whisper sert de référence persistante.
+        // Important: use a valid Discord message ID
+        // whenever available.
         const sessionMessageId =
           interaction.message?.id ||
           String(
-            originalMessage.id
+            original.id
           );
 
         saveSession(
@@ -3647,7 +3468,7 @@ client.on(
           'reply_writing',
           {
             originalMessageId:
-              originalMessage.id
+              original.id
           },
           requestId
         );
@@ -3655,7 +3476,7 @@ client.on(
         const modal =
           new ModalBuilder()
             .setCustomId(
-              `reply_modal_${originalMessage.id}_${requestId}`
+              `reply_modal_${original.id}_${requestId}`
             )
             .setTitle(
               '💬 Reply to Whisper'
@@ -3667,7 +3488,7 @@ client.on(
               'reply_content'
             )
             .setLabel(
-              'Your reply (max 3 paragraphs) *'
+              'Your reply (max 3 paragraphs)'
             )
             .setStyle(
               TextInputStyle.Paragraph
@@ -3712,13 +3533,14 @@ client.on(
           );
 
         if (
-          parts.length !== 4
+          parts.length !==
+          4
         ) {
           await interaction.reply({
             content:
               '❌ Invalid recovery button.',
-            ephemeral:
-              true
+            flags:
+              64
           });
 
           return;
@@ -3753,8 +3575,8 @@ client.on(
           await interaction.reply({
             content:
               '❌ Reply session is no longer valid.',
-            ephemeral:
-              true
+            flags:
+              64
           });
 
           return;
@@ -3775,7 +3597,7 @@ client.on(
               'reply_content'
             )
             .setLabel(
-              'Your reply (max 3 paragraphs) *'
+              'Your reply (max 3 paragraphs)'
             )
             .setStyle(
               TextInputStyle.Paragraph
@@ -3815,8 +3637,8 @@ client.on(
         )
       ) {
         await interaction.deferReply({
-          ephemeral:
-            true
+          flags:
+            64
         });
 
         const parts =
@@ -3825,7 +3647,8 @@ client.on(
           );
 
         if (
-          parts.length !== 4
+          parts.length !==
+          4
         ) {
           await interaction.editReply({
             content:
@@ -3848,12 +3671,9 @@ client.on(
             )
             .trim();
 
-        const replier =
-          interaction.user;
-
         const session =
           getSession(
-            replier.id
+            interaction.user.id
           );
 
         if (
@@ -3897,7 +3717,8 @@ client.on(
           );
 
         if (
-          paragraphs > 3
+          paragraphs >
+          3
         ) {
           await interaction.editReply({
             content:
@@ -3914,7 +3735,7 @@ client.on(
 
         if (!original) {
           deleteSession(
-            replier.id
+            interaction.user.id
           );
 
           await interaction.editReply({
@@ -3927,10 +3748,10 @@ client.on(
 
         if (
           original.receiver_id !==
-          replier.id
+          interaction.user.id
         ) {
           deleteSession(
-            replier.id
+            interaction.user.id
           );
 
           await interaction.editReply({
@@ -3950,7 +3771,7 @@ client.on(
         if (
           !reserveAction(
             actionKey,
-            replier.id
+            interaction.user.id
           )
         ) {
           await interaction.editReply({
@@ -3962,23 +3783,22 @@ client.on(
         }
 
         let savedMessage;
-        let conversation;
 
         try {
           const transaction =
             db.transaction(() => {
-              conversation =
+              const conversation =
                 getOrCreateConversation(
-                  replier.id,
+                  interaction.user.id,
                   senderId
                 );
 
-              savedMessage =
+              const created =
                 createPendingMessage({
                   conversationId:
                     conversation.id,
                   senderId:
-                    replier.id,
+                    interaction.user.id,
                   receiverId:
                     senderId,
                   content:
@@ -3989,23 +3809,26 @@ client.on(
 
               linkActionToMessage(
                 actionKey,
-                savedMessage.id
+                created.id
               );
 
               updateSessionData(
-                replier.id,
+                interaction.user.id,
                 'delivery_pending',
                 {
                   originalMessageId:
                     original.id,
-                  actionKey,
                   messageId:
-                    savedMessage.id
+                    created.id,
+                  actionKey
                 }
               );
+
+              return created;
             });
 
-          transaction();
+          savedMessage =
+            transaction();
         } catch {
           failAction(
             actionKey
@@ -4029,31 +3852,37 @@ client.on(
           'sent'
         ) {
           deleteSession(
-            replier.id
+            interaction.user.id
           );
 
           await interaction.editReply({
             content:
               '✅ Reply sent!'
           });
-        } else if (
+
+          return;
+        }
+
+        if (
           result.status ===
           'failed'
         ) {
           deleteSession(
-            replier.id
+            interaction.user.id
           );
 
           await interaction.editReply({
             content:
               '❌ Reply could not be delivered.'
           });
-        } else {
-          await interaction.editReply({
-            content:
-              `⏳ Reply saved. Delivery is pending (${result.attempts}/3).`
-          });
+
+          return;
         }
+
+        await interaction.editReply({
+          content:
+            `⏳ Reply saved. Delivery is pending (${result.attempts}/3). Use \`/recover\` to retry.`
+        });
 
         return;
       }
@@ -4069,8 +3898,8 @@ client.on(
         )
       ) {
         await interaction.deferReply({
-          ephemeral:
-            true
+          flags:
+            64
         });
 
         const conversationId =
@@ -4121,7 +3950,8 @@ client.on(
           return;
         }
 
-        const pseudoMap = {};
+        const pseudoMap =
+          {};
 
         for (
           const userId of [
@@ -4155,14 +3985,19 @@ client.on(
                 `**${pseudo}** (${date}): ${message.content}`
               );
             })
-            .join('\n\n');
+            .join(
+              '\n\n'
+            );
 
         if (
           historyText.length >
           1000
         ) {
           historyText =
-            `${historyText.slice(0, 1000)}...`;
+            `${historyText.slice(
+              0,
+              1000
+            )}...`;
         }
 
         const embed =
@@ -4183,9 +4018,8 @@ client.on(
             .setTimestamp();
 
         await interaction.editReply({
-          embeds: [
-            embed
-          ]
+          embeds:
+            [embed]
         });
 
         return;
@@ -4202,8 +4036,8 @@ client.on(
         )
       ) {
         await interaction.deferReply({
-          ephemeral:
-            true
+          flags:
+            64
         });
 
         const conversationId =
@@ -4226,7 +4060,7 @@ client.on(
         }
 
         const otherParticipant =
-          getConversationOtherParticipant(
+          getOtherParticipant(
             conversation,
             interaction.user.id
           );
@@ -4280,9 +4114,8 @@ client.on(
         await interaction.editReply({
           content:
             '⚠️ **Block this sender?** You will no longer receive messages from this conversation.',
-          components: [
-            row
-          ]
+          components:
+            [row]
         });
 
         return;
@@ -4314,14 +4147,15 @@ client.on(
           await interaction.editReply({
             content:
               '❌ Conversation not found.',
-            components: []
+            components:
+              []
           });
 
           return;
         }
 
         const otherParticipant =
-          getConversationOtherParticipant(
+          getOtherParticipant(
             conversation,
             interaction.user.id
           );
@@ -4330,7 +4164,8 @@ client.on(
           await interaction.editReply({
             content:
               '❌ You are not part of this conversation.',
-            components: []
+            components:
+              []
           });
 
           return;
@@ -4342,7 +4177,8 @@ client.on(
           await interaction.editReply({
             content:
               '⚠️ This conversation is already blocked.',
-            components: []
+            components:
+              []
           });
 
           return;
@@ -4360,7 +4196,8 @@ client.on(
           await interaction.editReply({
             content:
               '⚠️ This block action is already being processed.',
-            components: []
+            components:
+              []
           });
 
           return;
@@ -4381,7 +4218,8 @@ client.on(
             await interaction.editReply({
               content:
                 '⚠️ Conversation already blocked.',
-              components: []
+              components:
+                []
             });
 
             return;
@@ -4390,6 +4228,25 @@ client.on(
           completeAction(
             actionKey
           );
+
+          await interaction.editReply({
+            content:
+              '✅ **Blocked.**',
+            components:
+              []
+          });
+
+          try {
+            const other =
+              await client.users.fetch(
+                otherParticipant
+              );
+
+            await other.send({
+              content:
+                '🚫 **You have been blocked.**'
+            });
+          } catch {}
         } catch {
           failAction(
             actionKey
@@ -4398,29 +4255,10 @@ client.on(
           await interaction.editReply({
             content:
               '❌ Error blocking the conversation.',
-            components: []
+            components:
+              []
           });
-
-          return;
         }
-
-        await interaction.editReply({
-          content:
-            '✅ **Blocked.**',
-          components: []
-        });
-
-        try {
-          const sender =
-            await client.users.fetch(
-              otherParticipant
-            );
-
-          await sender.send({
-            content:
-              '🚫 **You have been blocked.**'
-          });
-        } catch {}
 
         return;
       }
@@ -4440,7 +4278,8 @@ client.on(
         await interaction.editReply({
           content:
             '❌ Cancelled.',
-          components: []
+          components:
+            []
         });
 
         return;
@@ -4464,8 +4303,8 @@ client.on(
           await interaction.reply({
             content:
               '❌ Something went wrong. Please try again.',
-            ephemeral:
-              true
+            flags:
+              64
           });
         }
       } catch {}
@@ -4490,7 +4329,8 @@ client.once(
           client.user.id
         ),
         {
-          body: commands
+          body:
+            commands
         }
       );
 
@@ -4513,9 +4353,11 @@ client.once(
 // SAFE SHUTDOWN
 // =====================================================
 
-function shutdown(signal) {
+function shutdown(
+  signal
+) {
   console.log(
-    `🛑 ${signal} received.`
+    `🛑 ${signal} received. Shutting down safely...`
   );
 
   clearInterval(
@@ -4535,12 +4377,14 @@ function shutdown(signal) {
 
 process.on(
   'SIGTERM',
-  () => shutdown('SIGTERM')
+  () =>
+    shutdown('SIGTERM')
 );
 
 process.on(
   'SIGINT',
-  () => shutdown('SIGINT')
+  () =>
+    shutdown('SIGINT')
 );
 
 // =====================================================
