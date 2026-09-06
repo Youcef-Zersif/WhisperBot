@@ -5,18 +5,16 @@ const {
   TextInputStyle, StringSelectMenuBuilder, StringSelectMenuOptionBuilder
 } = require('discord.js');
 const dotenv = require('dotenv');
-const sqlite3 = require('sqlite3').verbose();
+const Database = require('better-sqlite3');
 const path = require('path');
 
 dotenv.config();
 
-// =============================================
-// ===== DATABASE =====
-// =============================================
-const db = new sqlite3.Database(path.join(__dirname, 'whispers.db'));
+const db = new Database(path.join(__dirname, 'whispers.db'));
 
-db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS conversations (
+// ===== TABLES =====
+db.exec(`
+  CREATE TABLE IF NOT EXISTS conversations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_a_id TEXT NOT NULL,
     user_b_id TEXT NOT NULL,
@@ -25,18 +23,22 @@ db.serialize(() => {
     is_blocked BOOLEAN DEFAULT 0,
     blocked_by TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
+  )
+`);
 
-  db.run(`CREATE TABLE IF NOT EXISTS messages (
+db.exec(`
+  CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation_id INTEGER NOT NULL,
     sender_id TEXT NOT NULL,
     receiver_id TEXT NOT NULL,
     content TEXT,
     sent_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
+  )
+`);
 
-  db.run(`CREATE TABLE IF NOT EXISTS active_sessions (
+db.exec(`
+  CREATE TABLE IF NOT EXISTS active_sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT NOT NULL,
     channel_id TEXT NOT NULL,
@@ -45,12 +47,9 @@ db.serialize(() => {
     data TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
-});
+  )
+`);
 
-// =============================================
-// ===== CLIENT DISCORD =====
-// =============================================
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -61,9 +60,6 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
-// =============================================
-// ===== CONSTANTES =====
-// =============================================
 const BANNER_URL = 'https://cdn.discordapp.com/attachments/1545825179895074946/1545861012815614022/file_0000000038dc8210b6ae006f111c6e65.webp';
 
 const QUOTES = [
@@ -83,9 +79,6 @@ function getRandomQuote() {
   return QUOTES[Math.floor(Math.random() * QUOTES.length)];
 }
 
-// =============================================
-// ===== COMMANDES SLASH =====
-// =============================================
 const commands = [
   new SlashCommandBuilder().setName('ping').setDescription('Replies Pong!'),
   new SlashCommandBuilder().setName('whisper').setDescription('Send an anonymous message'),
@@ -108,60 +101,38 @@ const commands = [
 
 const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
 
-// =============================================
 // ===== FONCTIONS BDD =====
-// =============================================
-
-function getOrCreateConversation(userA, userB, callback) {
-  db.get(
-    `SELECT * FROM conversations WHERE
+function getOrCreateConversation(userA, userB) {
+  let row = db.prepare(`
+    SELECT * FROM conversations WHERE
     (user_a_id = ? AND user_b_id = ?) OR
-    (user_a_id = ? AND user_b_id = ?)`,
-    [userA, userB, userB, userA],
-    (err, row) => {
-      if (err) return callback(err, null);
-      if (row) {
-        if (row.is_blocked) return callback(new Error('Conversation is blocked'), null);
-        return callback(null, row);
-      }
-      db.run(
-        `INSERT INTO conversations (user_a_id, user_b_id) VALUES (?, ?)`,
-        [userA, userB],
-        function (err) {
-          if (err) return callback(err, null);
-          const convId = this.lastID;
-          db.get(`SELECT * FROM conversations WHERE id = ?`, [convId], (err, row) => {
-            if (err) return callback(err, null);
-            callback(null, row);
-          });
-        }
-      );
-    }
-  );
+    (user_a_id = ? AND user_b_id = ?)
+  `).get(userA, userB, userB, userA);
+
+  if (row) {
+    if (row.is_blocked) throw new Error('Conversation is blocked');
+    return row;
+  }
+
+  const info = db.prepare(`
+    INSERT INTO conversations (user_a_id, user_b_id) VALUES (?, ?)
+  `).run(userA, userB);
+
+  row = db.prepare(`SELECT * FROM conversations WHERE id = ?`).get(info.lastInsertRowid);
+  return row;
 }
 
-function saveMessage(conversationId, senderId, receiverId, content, callback) {
-  db.run(
-    `INSERT INTO messages (conversation_id, sender_id, receiver_id, content) VALUES (?, ?, ?, ?)`,
-    [conversationId, senderId, receiverId, content],
-    function (err) {
-      if (err) {
-        console.error('❌ SQL ERROR in saveMessage:', err.message);
-        return callback(err, null);
-      }
-      db.get(`SELECT * FROM messages WHERE id = ?`, [this.lastID], (err, row) => {
-        if (err) {
-          console.error('❌ SQL ERROR fetching message:', err.message);
-          return callback(err, null);
-        }
-        callback(null, row);
-      });
-    }
-  );
+function saveMessage(conversationId, senderId, receiverId, content) {
+  const info = db.prepare(`
+    INSERT INTO messages (conversation_id, sender_id, receiver_id, content)
+    VALUES (?, ?, ?, ?)
+  `).run(conversationId, senderId, receiverId, content);
+
+  return db.prepare(`SELECT * FROM messages WHERE id = ?`).get(info.lastInsertRowid);
 }
 
-function getMessageById(messageId, callback) {
-  db.get(`SELECT * FROM messages WHERE id = ?`, [messageId], callback);
+function getMessageById(messageId) {
+  return db.prepare(`SELECT * FROM messages WHERE id = ?`).get(messageId);
 }
 
 function getUserPseudo(conversation, userId) {
@@ -170,121 +141,84 @@ function getUserPseudo(conversation, userId) {
   return null;
 }
 
-function setUserPseudo(conversationId, userId, pseudo, callback) {
-  db.run(
-    `UPDATE conversations SET pseudo_a = ? WHERE id = ? AND user_a_id = ?`,
-    [pseudo, conversationId, userId],
-    function (err) {
-      if (err) return callback(err);
-      db.run(
-        `UPDATE conversations SET pseudo_b = ? WHERE id = ? AND user_b_id = ?`,
-        [pseudo, conversationId, userId],
-        callback
-      );
-    }
-  );
+function setUserPseudo(conversationId, userId, pseudo) {
+  db.prepare(`
+    UPDATE conversations SET pseudo_a = ? WHERE id = ? AND user_a_id = ?
+  `).run(pseudo, conversationId, userId);
+
+  db.prepare(`
+    UPDATE conversations SET pseudo_b = ? WHERE id = ? AND user_b_id = ?
+  `).run(pseudo, conversationId, userId);
 }
 
-function blockConversation(conversationId, userId, callback) {
-  db.run(
-    `UPDATE conversations SET is_blocked = 1, blocked_by = ? WHERE id = ?`,
-    [userId, conversationId],
-    callback
-  );
+function blockConversation(conversationId, userId) {
+  db.prepare(`
+    UPDATE conversations SET is_blocked = 1, blocked_by = ? WHERE id = ?
+  `).run(userId, conversationId);
 }
 
-function getLastMessage(conversationId, callback) {
-  db.get(
-    `SELECT sender_id, content, sent_at FROM messages
-     WHERE conversation_id = ?
-     ORDER BY sent_at DESC LIMIT 1`,
-    [conversationId],
-    callback
-  );
+function getLastMessage(conversationId) {
+  return db.prepare(`
+    SELECT sender_id, content, sent_at FROM messages
+    WHERE conversation_id = ?
+    ORDER BY sent_at DESC LIMIT 1
+  `).get(conversationId);
 }
 
-function getConversationHistory(conversationId, limit, callback) {
-  db.all(
-    `SELECT sender_id, content, sent_at FROM messages
-     WHERE conversation_id = ?
-     ORDER BY sent_at DESC LIMIT ?`,
-    [conversationId, limit],
-    (err, rows) => {
-      if (err) return callback(err, null);
-      const history = rows.reverse();
-      callback(null, history);
-    }
-  );
+function getConversationHistory(conversationId, limit) {
+  const rows = db.prepare(`
+    SELECT sender_id, content, sent_at FROM messages
+    WHERE conversation_id = ?
+    ORDER BY sent_at DESC LIMIT ?
+  `).all(conversationId, limit);
+  return rows.reverse();
 }
 
-// =============================================
-// ===== SESSIONS ACTIVES =====
-// =============================================
-function saveSession(userId, channelId, messageId, state, data, callback) {
+function saveSession(userId, channelId, messageId, state, data) {
   const jsonData = data ? JSON.stringify(data) : null;
-  db.run(
-    `INSERT OR REPLACE INTO active_sessions (user_id, channel_id, message_id, state, data, updated_at)
-     VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-    [userId, channelId, messageId, state, jsonData],
-    function (err) {
-      if (err) console.error('❌ Error saving session:', err);
-      if (callback) callback(err);
-    }
-  );
+  db.prepare(`
+    INSERT OR REPLACE INTO active_sessions (user_id, channel_id, message_id, state, data, updated_at)
+    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+  `).run(userId, channelId, messageId, state, jsonData);
 }
 
-function getSession(userId, callback) {
-  db.get(
-    `SELECT * FROM active_sessions WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1`,
-    [userId],
-    callback
-  );
+function getSession(userId) {
+  return db.prepare(`
+    SELECT * FROM active_sessions WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1
+  `).get(userId);
 }
 
-function deleteSession(userId, callback) {
-  db.run(`DELETE FROM active_sessions WHERE user_id = ?`, [userId], function (err) {
-    if (err) console.error('❌ Error deleting session:', err);
-    if (callback) callback(err);
-  });
+function deleteSession(userId) {
+  db.prepare(`DELETE FROM active_sessions WHERE user_id = ?`).run(userId);
 }
 
-function getAllSessions(callback) {
-  db.all(`SELECT * FROM active_sessions`, callback);
+function getAllSessions() {
+  return db.prepare(`SELECT * FROM active_sessions`).all();
 }
 
-// =============================================
-// ===== RESTAURATION AU DÉMARRAGE =====
-// =============================================
 async function restorePersistentViews() {
   console.log('🔄 Restoring persistent views...');
-  getAllSessions((err, sessions) => {
-    if (err) {
-      console.error('❌ Error restoring sessions:', err);
-      return;
-    }
-    sessions.forEach(session => {
-      console.log(`  ↳ Session for user ${session.user_id} (state: ${session.state})`);
-    });
-    console.log(`✅ Restored ${sessions.length} active sessions.`);
+  const sessions = getAllSessions();
+  sessions.forEach(session => {
+    console.log(`  ↳ Session for user ${session.user_id} (state: ${session.state})`);
   });
+  console.log(`✅ Restored ${sessions.length} active sessions.`);
 }
 
-// =============================================
 // ===== CACHE DES MEMBRES =====
-// =============================================
 const memberCache = new Map();
 
 async function getCachedMembers(interaction) {
   if (!interaction.guild) return [];
-  
+
   const guildId = interaction.guild.id;
   const now = Date.now();
   const cacheEntry = memberCache.get(guildId);
-  
+
   if (cacheEntry && (now - cacheEntry.lastUpdated) < 60000) {
     return cacheEntry.members;
   }
-  
+
   try {
     await interaction.guild.members.fetch();
     const members = interaction.guild.members.cache
@@ -294,12 +228,12 @@ async function getCachedMembers(interaction) {
         username: m.user.username,
         displayName: m.displayName
       }));
-    
+
     memberCache.set(guildId, {
       members: members,
       lastUpdated: now
     });
-    
+
     return members;
   } catch (error) {
     console.error('❌ Error fetching members:', error.message);
@@ -308,45 +242,22 @@ async function getCachedMembers(interaction) {
   }
 }
 
-// =============================================
-// ===== HELPERS =====
-// =============================================
-async function getServerMembers(interaction) {
-  if (!interaction.guild) return [];
-  try {
-    await interaction.guild.members.fetch();
-    return interaction.guild.members.cache
-      .filter(m => !m.user.bot && m.user.id !== interaction.user.id)
-      .map(m => ({
-        id: m.user.id,
-        username: m.user.username,
-        displayName: m.displayName
-      }));
-  } catch (error) {
-    console.error('Error fetching members:', error);
-    return [];
-  }
-}
-
-// =============================================
-// ===== AFFICHAGE DU MENU PRINCIPAL =====
-// =============================================
 async function showMainMenu(interaction) {
   try {
     if (!interaction.guild) {
-      await interaction.followUp({ 
+      await interaction.followUp({
         content: '❌ This command must be used in a server, not in DMs.',
-        ephemeral: true 
+        ephemeral: true
       });
       return;
     }
 
     const members = await getCachedMembers(interaction);
-    
+
     if (members.length === 0) {
-      await interaction.followUp({ 
-        content: '❌ No members found in this server.\n\nMake sure the bot has the **"View Channels"** and **"Read Message History"** permissions.',
-        ephemeral: true 
+      await interaction.followUp({
+        content: '❌ No members found in this server.',
+        ephemeral: true
       });
       return;
     }
@@ -386,43 +297,26 @@ async function showMainMenu(interaction) {
         components: [row, cancelRow],
         ephemeral: true
       });
-      saveSession(
-        interaction.user.id,
-        interaction.channel.id,
-        reply.id,
-        'selecting_recipient',
-        { guildId: interaction.guild?.id }
-      );
+      saveSession(interaction.user.id, interaction.channel.id, reply.id, 'selecting_recipient', { guildId: interaction.guild?.id });
     } else {
       const reply = await interaction.reply({
         embeds: [embed],
         components: [row, cancelRow],
         ephemeral: true
       });
-      saveSession(
-        interaction.user.id,
-        interaction.channel.id,
-        reply.id,
-        'selecting_recipient',
-        { guildId: interaction.guild?.id }
-      );
+      saveSession(interaction.user.id, interaction.channel.id, reply.id, 'selecting_recipient', { guildId: interaction.guild?.id });
     }
   } catch (error) {
     console.error('❌ Error in showMainMenu:', error);
     try {
-      await interaction.followUp({ 
-        content: '❌ An error occurred. Please try again with `/whisper`.',
-        ephemeral: true 
-      });
+      await interaction.followUp({ content: '❌ An error occurred. Please try again with `/whisper`.', ephemeral: true });
     } catch (e) {
       console.error('❌ Could not send error message:', e);
     }
   }
 }
 
-// =============================================
-// ===== GESTION DES INTERACTIONS =====
-// =============================================
+// ===== INTERACTION HANDLER =====
 client.on('interactionCreate', async interaction => {
   try {
     if (interaction.isChatInputCommand()) {
@@ -448,55 +342,49 @@ client.on('interactionCreate', async interaction => {
         }
         if (sub === 'find') {
           const msgId = interaction.options.getString('message_id');
-          db.get(
-            `SELECT sender_id, content, sent_at FROM messages WHERE id = ?`,
-            [msgId],
-            async (err, row) => {
-              if (err || !row) {
-                await interaction.editReply({ content: '❌ Message not found.' });
-                return;
-              }
-              try {
-                const user = await client.users.fetch(row.sender_id);
-                const embed = new EmbedBuilder()
-                  .setColor(0x6C2BD9)
-                  .setTitle('🔍 Message Sender')
-                  .addFields(
-                    { name: 'User', value: `${user.tag}`, inline: true },
-                    { name: 'ID', value: user.id, inline: true },
-                    { name: 'Content', value: row.content, inline: false },
-                    { name: 'Sent', value: new Date(row.sent_at).toLocaleString(), inline: true }
-                  )
-                  .setTimestamp();
-                await interaction.editReply({ embeds: [embed] });
-              } catch {
-                await interaction.editReply({ content: '❌ User not found.' });
-              }
-            }
-          );
+          const row = db.prepare(`SELECT sender_id, content, sent_at FROM messages WHERE id = ?`).get(msgId);
+          if (!row) {
+            await interaction.editReply({ content: '❌ Message not found.' });
+            return;
+          }
+          try {
+            const user = await client.users.fetch(row.sender_id);
+            const embed = new EmbedBuilder()
+              .setColor(0x6C2BD9)
+              .setTitle('🔍 Message Sender')
+              .addFields(
+                { name: 'User', value: `${user.tag}`, inline: true },
+                { name: 'ID', value: user.id, inline: true },
+                { name: 'Content', value: row.content, inline: false },
+                { name: 'Sent', value: new Date(row.sent_at).toLocaleString(), inline: true }
+              )
+              .setTimestamp();
+            await interaction.editReply({ embeds: [embed] });
+          } catch {
+            await interaction.editReply({ content: '❌ User not found.' });
+          }
         }
         return;
       }
 
       if (commandName === 'recover') {
         await interaction.deferReply({ ephemeral: true });
-        getSession(interaction.user.id, async (err, session) => {
-          if (err || !session) {
-            await interaction.editReply({ content: '❌ No active session found.' });
-            return;
-          }
-          const data = session.data ? JSON.parse(session.data) : {};
-          const embed = new EmbedBuilder()
-            .setColor(0x6C2BD9)
-            .setImage(BANNER_URL)
-            .setTitle('🔄 Session Recovered')
-            .setDescription(`You were in the middle of: **${session.state}**\n\nUse **/whisper** to start a new message.`)
-            .addFields({ name: '💬 Quote', value: getRandomQuote(), inline: false })
-            .setFooter({ text: 'Vegas Whispers' })
-            .setTimestamp();
-          await interaction.editReply({ embeds: [embed] });
-          deleteSession(interaction.user.id);
-        });
+        const session = getSession(interaction.user.id);
+        if (!session) {
+          await interaction.editReply({ content: '❌ No active session found.' });
+          return;
+        }
+        const data = session.data ? JSON.parse(session.data) : {};
+        const embed = new EmbedBuilder()
+          .setColor(0x6C2BD9)
+          .setImage(BANNER_URL)
+          .setTitle('🔄 Session Recovered')
+          .setDescription(`You were in the middle of: **${session.state}**`)
+          .addFields({ name: '💬 Quote', value: getRandomQuote(), inline: false })
+          .setFooter({ text: 'Vegas Whispers' })
+          .setTimestamp();
+        await interaction.editReply({ embeds: [embed] });
+        deleteSession(interaction.user.id);
         return;
       }
     }
@@ -525,39 +413,20 @@ client.on('interactionCreate', async interaction => {
           .setColor(0x6C2BD9)
           .setImage(BANNER_URL)
           .setTitle(`🌙 What name will you wear tonight?`)
-          .setDescription(`You are about to message **${displayName}**.\n\nSelect a name for this conversation. This will be shown instead of your real name.`)
+          .setDescription(`You are about to message **${displayName}**.`)
           .addFields({ name: '💬 Quote', value: getRandomQuote(), inline: false })
           .setFooter({ text: 'Vegas Whispers • Your identity is safe' })
           .setTimestamp();
 
         const row = new ActionRowBuilder()
           .addComponents(
-            new ButtonBuilder()
-              .setCustomId(`pseudo_${targetId}_shadow`)
-              .setLabel('👤 Shadow')
-              .setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder()
-              .setCustomId(`pseudo_${targetId}_admirer`)
-              .setLabel('❤️ Secret Admirer')
-              .setStyle(ButtonStyle.Danger),
-            new ButtonBuilder()
-              .setCustomId(`pseudo_${targetId}_friendly`)
-              .setLabel('🤝 Friendly Curious')
-              .setStyle(ButtonStyle.Success)
+            new ButtonBuilder().setCustomId(`pseudo_${targetId}_shadow`).setLabel('👤 Shadow').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId(`pseudo_${targetId}_admirer`).setLabel('❤️ Secret Admirer').setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId(`pseudo_${targetId}_friendly`).setLabel('🤝 Friendly Curious').setStyle(ButtonStyle.Success)
           );
 
-        await interaction.editReply({
-          embeds: [embed],
-          components: [row]
-        });
-
-        saveSession(
-          interaction.user.id,
-          interaction.channel.id,
-          interaction.message.id,
-          'choosing_pseudo',
-          { targetId, targetDisplayName: displayName, guildId: interaction.guild?.id }
-        );
+        await interaction.editReply({ embeds: [embed], components: [row] });
+        saveSession(interaction.user.id, interaction.channel.id, interaction.message.id, 'choosing_pseudo', { targetId, targetDisplayName: displayName });
       } catch {
         await interaction.editReply({ content: '❌ User not found.', embeds: [], components: [] });
         await showMainMenu(interaction);
@@ -571,69 +440,48 @@ client.on('interactionCreate', async interaction => {
       const targetId = parts[1];
       const pseudoType = parts[2];
 
-      const pseudoMap = {
-        shadow: 'Shadow',
-        admirer: 'Secret Admirer',
-        friendly: 'Friendly Curious'
-      };
+      const pseudoMap = { shadow: 'Shadow', admirer: 'Secret Admirer', friendly: 'Friendly Curious' };
       const pseudo = pseudoMap[pseudoType];
 
-      getSession(interaction.user.id, async (err, session) => {
-        if (err || !session) {
-          await interaction.editReply({ content: '❌ Session expired. Please use /whisper again.', embeds: [], components: [] });
-          await showMainMenu(interaction);
-          return;
-        }
+      const session = getSession(interaction.user.id);
+      if (!session) {
+        await interaction.editReply({ content: '❌ Session expired.', embeds: [], components: [] });
+        await showMainMenu(interaction);
+        return;
+      }
 
-        const data = session.data ? JSON.parse(session.data) : {};
-        const displayName = data.targetDisplayName || targetId;
+      const data = session.data ? JSON.parse(session.data) : {};
+      const displayName = data.targetDisplayName || targetId;
 
-        saveSession(
-          interaction.user.id,
-          interaction.channel.id,
-          interaction.message.id,
-          'pseudo_selected',
-          { targetId, targetDisplayName: displayName, pseudo, guildId: interaction.guild?.id }
+      saveSession(interaction.user.id, interaction.channel.id, interaction.message.id, 'pseudo_selected', { targetId, targetDisplayName: displayName, pseudo });
+
+      const target = await client.users.fetch(targetId);
+
+      const embed = new EmbedBuilder()
+        .setColor(0x6C2BD9)
+        .setImage(BANNER_URL)
+        .setTitle(`💌 A secret for ${displayName}...`)
+        .setDescription(
+          `✍️ Write your message below.\n\n` +
+          `**Rules:**\n• Max **3 paragraphs**\n• Max **2000 characters**`
+        )
+        .addFields(
+          { name: '💬 Quote', value: getRandomQuote(), inline: false },
+          { name: '🔮 Your identity', value: `You will appear as **${pseudo}**`, inline: false }
+        )
+        .setFooter({ text: 'Vegas Whispers • Your identity is safe' })
+        .setTimestamp();
+
+      const row = new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder()
+            .setCustomId(`open_modal_${targetId}_${pseudo}`)
+            .setLabel('✍️ Write Message')
+            .setStyle(ButtonStyle.Primary)
         );
 
-        const target = await client.users.fetch(targetId);
-
-        const embed = new EmbedBuilder()
-          .setColor(0x6C2BD9)
-          .setImage(BANNER_URL)
-          .setTitle(`💌 A secret for ${displayName}...`)
-          .setDescription(
-            `✍️ Write your message below.\n\n` +
-            `**Rules:**\n• Max **3 paragraphs**\n• Max **2000 characters**`
-          )
-          .addFields(
-            { name: '💬 Quote', value: getRandomQuote(), inline: false },
-            { name: '🔮 Your identity', value: `You will appear as **${pseudo}**`, inline: false }
-          )
-          .setFooter({ text: 'Vegas Whispers • Your identity is safe' })
-          .setTimestamp();
-
-        const row = new ActionRowBuilder()
-          .addComponents(
-            new ButtonBuilder()
-              .setCustomId(`open_modal_${targetId}_${pseudo}`)
-              .setLabel('✍️ Write Message')
-              .setStyle(ButtonStyle.Primary)
-          );
-
-        await interaction.editReply({
-          embeds: [embed],
-          components: [row]
-        });
-
-        saveSession(
-          interaction.user.id,
-          interaction.channel.id,
-          interaction.message.id,
-          'writing_message',
-          { targetId, targetDisplayName: displayName, pseudo, guildId: interaction.guild?.id }
-        );
-      });
+      await interaction.editReply({ embeds: [embed], components: [row] });
+      saveSession(interaction.user.id, interaction.channel.id, interaction.message.id, 'writing_message', { targetId, targetDisplayName: displayName, pseudo });
       return;
     }
 
@@ -643,41 +491,34 @@ client.on('interactionCreate', async interaction => {
       const pseudo = parts[3];
       const target = await client.users.fetch(targetId);
 
-      getSession(interaction.user.id, async (err, session) => {
-        if (err || !session) {
-          await interaction.reply({ content: '❌ Session expired. Please use /whisper again.', ephemeral: true });
-          await showMainMenu(interaction);
-          return;
-        }
+      const session = getSession(interaction.user.id);
+      if (!session) {
+        await interaction.reply({ content: '❌ Session expired.', ephemeral: true });
+        await showMainMenu(interaction);
+        return;
+      }
 
-        const data = session.data ? JSON.parse(session.data) : {};
-        const displayName = data.targetDisplayName || target.username;
+      const data = session.data ? JSON.parse(session.data) : {};
+      const displayName = data.targetDisplayName || target.username;
 
-        saveSession(
-          interaction.user.id,
-          interaction.channel.id,
-          interaction.message.id,
-          'writing_message',
-          { targetId, targetDisplayName: displayName, pseudo, guildId: interaction.guild?.id }
-        );
+      saveSession(interaction.user.id, interaction.channel.id, interaction.message.id, 'writing_message', { targetId, targetDisplayName: displayName, pseudo });
 
-        const modal = new ModalBuilder()
-          .setCustomId(`send_message_${targetId}_${pseudo}`)
-          .setTitle(`💌 A secret for ${displayName}...`);
+      const modal = new ModalBuilder()
+        .setCustomId(`send_message_${targetId}_${pseudo}`)
+        .setTitle(`💌 A secret for ${displayName}...`);
 
-        const input = new TextInputBuilder()
-          .setCustomId('message_content')
-          .setLabel('Your message (max 3 paragraphs) *')
-          .setStyle(TextInputStyle.Paragraph)
-          .setPlaceholder('Type your anonymous message here...\n\nUse double Enter for new paragraph.')
-          .setRequired(true)
-          .setMaxLength(2000);
+      const input = new TextInputBuilder()
+        .setCustomId('message_content')
+        .setLabel('Your message (max 3 paragraphs) *')
+        .setStyle(TextInputStyle.Paragraph)
+        .setPlaceholder('Type your anonymous message here...')
+        .setRequired(true)
+        .setMaxLength(2000);
 
-        const row = new ActionRowBuilder().addComponents(input);
-        modal.addComponents(row);
+      const row = new ActionRowBuilder().addComponents(input);
+      modal.addComponents(row);
 
-        await interaction.showModal(modal);
-      });
+      await interaction.showModal(modal);
       return;
     }
 
@@ -694,113 +535,96 @@ client.on('interactionCreate', async interaction => {
       const charCount = messageContent.length;
 
       if (paragraphs.length > 3) {
-        await interaction.editReply({
-          content: `❌ **${paragraphs.length} paragraphs** detected. Maximum is 3.`
-        });
+        await interaction.editReply({ content: `❌ **${paragraphs.length} paragraphs** detected. Maximum is 3.` });
         await showMainMenu(interaction);
         return;
       }
 
       const target = await client.users.fetch(targetId);
 
-      getSession(sender.id, async (err, session) => {
-        if (err || !session) {
-          await interaction.editReply({ content: '❌ Session expired. Please use /whisper again.' });
-          await showMainMenu(interaction);
-          return;
+      const session = getSession(sender.id);
+      if (!session) {
+        await interaction.editReply({ content: '❌ Session expired.' });
+        await showMainMenu(interaction);
+        return;
+      }
+
+      const data = session.data ? JSON.parse(session.data) : {};
+      const displayName = data.targetDisplayName || target.username;
+
+      let conversation;
+      try {
+        conversation = getOrCreateConversation(sender.id, target.id);
+      } catch (err) {
+        if (err.message === 'Conversation is blocked') {
+          await interaction.editReply({ content: '❌ This conversation is blocked.' });
+        } else {
+          console.error('❌ getOrCreateConversation error:', err);
+          await interaction.editReply({ content: '❌ Error creating conversation.' });
+        }
+        await showMainMenu(interaction);
+        return;
+      }
+
+      const senderPseudo = getUserPseudo(conversation, sender.id);
+      if (!senderPseudo) {
+        try {
+          setUserPseudo(conversation.id, sender.id, pseudo);
+        } catch (err) {
+          console.error('❌ Error saving pseudo:', err);
+        }
+      }
+
+      let message;
+      try {
+        message = saveMessage(conversation.id, sender.id, target.id, messageContent);
+      } catch (err) {
+        console.error('❌ saveMessage error:', err);
+        await interaction.editReply({ content: '❌ Error saving message.' });
+        await showMainMenu(interaction);
+        return;
+      }
+
+      await interaction.editReply({ content: `✅ **Sent!** ${charCount} characters • ${paragraphs.length} paragraphs` });
+
+      const lastMsg = getLastMessage(conversation.id);
+
+      try {
+        const embedMsg = new EmbedBuilder()
+          .setColor(0x6C2BD9)
+          .setImage(BANNER_URL)
+          .setAuthor({ name: `💬 ${pseudo}` })
+          .setDescription(messageContent)
+          .setFooter({ text: `ID: ${message.id}` })
+          .setTimestamp();
+
+        if (lastMsg) {
+          const participants = [conversation.user_a_id, conversation.user_b_id];
+          const pseudoMap = {};
+          for (const uid of participants) {
+            const p = getUserPseudo(conversation, uid);
+            if (p) pseudoMap[uid] = p;
+          }
+          const sp = pseudoMap[lastMsg.sender_id] || 'Anonymous';
+          const preview = lastMsg.content.length > 100 ? lastMsg.content.slice(0, 100) + '...' : lastMsg.content;
+          embedMsg.addFields({ name: '📜 Last message', value: `**${sp}:** ${preview}` });
         }
 
-        const data = session.data ? JSON.parse(session.data) : {};
-        const displayName = data.targetDisplayName || target.username;
+        const row1 = new ActionRowBuilder()
+          .addComponents(
+            new ButtonBuilder().setCustomId(`reply_${message.id}_${sender.id}`).setLabel('💬 Reply').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId(`block_${conversation.id}_${sender.id}`).setLabel('🚫 Block Sender').setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId(`history_${conversation.id}`).setLabel('📜 History').setStyle(ButtonStyle.Secondary)
+          );
 
-        getOrCreateConversation(sender.id, target.id, async (err, conversation) => {
-          if (err) {
-            if (err.message === 'Conversation is blocked') {
-              await interaction.editReply({ content: '❌ This conversation is blocked.' });
-            } else {
-              console.error('❌ getOrCreateConversation error:', err);
-              await interaction.editReply({ content: '❌ Error creating conversation.' });
-            }
-            await showMainMenu(interaction);
-            return;
-          }
+        await target.send({ content: `👋 **You received a whisper:**`, embeds: [embedMsg], components: [row1] });
+        console.log(`✅ Message sent from ${sender.username} to ${displayName}`);
+      } catch (error) {
+        console.error(`❌ Error sending DM:`, error);
+      }
 
-          const senderPseudo = getUserPseudo(conversation, sender.id);
-          if (!senderPseudo) {
-            setUserPseudo(conversation.id, sender.id, pseudo, (err) => {
-              if (err) console.error('❌ Error saving pseudo:', err);
-            });
-          }
-
-          saveMessage(conversation.id, sender.id, target.id, messageContent, async (err, message) => {
-            if (err) {
-              console.error('❌ saveMessage error:', err);
-              await interaction.editReply({ content: '❌ Error saving message. Please try again.' });
-              await showMainMenu(interaction);
-              return;
-            }
-
-            await interaction.editReply({
-              content: `✅ **Sent!** ${charCount} characters • ${paragraphs.length} paragraphs`
-            });
-
-            getLastMessage(conversation.id, async (err, lastMsg) => {
-              if (err) console.error('❌ Error fetching last message:', err);
-
-              try {
-                const embedMsg = new EmbedBuilder()
-                  .setColor(0x6C2BD9)
-                  .setImage(BANNER_URL)
-                  .setAuthor({ name: `💬 ${pseudo}` })
-                  .setDescription(messageContent)
-                  .setFooter({ text: `ID: ${message.id}` })
-                  .setTimestamp();
-
-                if (lastMsg) {
-                  const pseudoMap = {};
-                  const participants = [conversation.user_a_id, conversation.user_b_id];
-                  for (const uid of participants) {
-                    const p = getUserPseudo(conversation, uid);
-                    if (p) pseudoMap[uid] = p;
-                  }
-                  const sp = pseudoMap[lastMsg.sender_id] || 'Anonymous';
-                  const preview = lastMsg.content.length > 100 ? lastMsg.content.slice(0, 100) + '...' : lastMsg.content;
-                  embedMsg.addFields({ name: '📜 Last message', value: `**${sp}:** ${preview}` });
-                }
-
-                const row1 = new ActionRowBuilder()
-                  .addComponents(
-                    new ButtonBuilder()
-                      .setCustomId(`reply_${message.id}_${sender.id}`)
-                      .setLabel('💬 Reply')
-                      .setStyle(ButtonStyle.Primary),
-                    new ButtonBuilder()
-                      .setCustomId(`block_${conversation.id}_${sender.id}`)
-                      .setLabel('🚫 Block Sender')
-                      .setStyle(ButtonStyle.Danger),
-                    new ButtonBuilder()
-                      .setCustomId(`history_${conversation.id}`)
-                      .setLabel('📜 History')
-                      .setStyle(ButtonStyle.Secondary)
-                  );
-
-                await target.send({
-                  content: `👋 **You received a whisper:**`,
-                  embeds: [embedMsg],
-                  components: [row1]
-                });
-
-                console.log(`✅ Message sent from ${sender.username} to ${displayName}`);
-              } catch (error) {
-                console.error(`❌ Error sending DM:`, error);
-              }
-            });
-
-            deleteSession(sender.id);
-            await showMainMenu(interaction);
-          });
-        });
-      });
+      deleteSession(sender.id);
+      await showMainMenu(interaction);
       return;
     }
 
@@ -808,42 +632,37 @@ client.on('interactionCreate', async interaction => {
       await interaction.deferReply({ ephemeral: true });
       const conversationId = interaction.customId.split('_')[1];
 
-      db.get(`SELECT * FROM conversations WHERE id = ?`, [conversationId], async (err, conversation) => {
-        if (err || !conversation) {
-          return interaction.editReply({ content: '❌ Conversation not found.' });
-        }
+      const conversation = db.prepare(`SELECT * FROM conversations WHERE id = ?`).get(conversationId);
+      if (!conversation) {
+        return interaction.editReply({ content: '❌ Conversation not found.' });
+      }
 
-        getConversationHistory(conversationId, 10, async (err, history) => {
-          if (err) {
-            return interaction.editReply({ content: '❌ Error fetching history.' });
-          }
-          if (!history || history.length === 0) {
-            return interaction.editReply({ content: '📜 No messages in this conversation yet.' });
-          }
+      const history = getConversationHistory(conversationId, 10);
+      if (!history || history.length === 0) {
+        return interaction.editReply({ content: '📜 No messages in this conversation yet.' });
+      }
 
-          let historyText = '';
-          const participants = [conversation.user_a_id, conversation.user_b_id];
-          const pseudoMap = {};
-          for (const uid of participants) {
-            const p = getUserPseudo(conversation, uid);
-            if (p) pseudoMap[uid] = p;
-          }
-          history.forEach(msg => {
-            const senderPseudo = pseudoMap[msg.sender_id] || 'Anonymous';
-            const date = new Date(msg.sent_at).toLocaleString();
-            historyText += `**${senderPseudo}** (${date}): ${msg.content}\n\n`;
-          });
-
-          const embed = new EmbedBuilder()
-            .setColor(0x6C2BD9)
-            .setTitle('📜 Conversation History (last 10)')
-            .setDescription(historyText || 'No messages')
-            .setFooter({ text: 'Vegas Whispers' })
-            .setTimestamp();
-
-          await interaction.editReply({ embeds: [embed] });
-        });
+      let historyText = '';
+      const participants = [conversation.user_a_id, conversation.user_b_id];
+      const pseudoMap = {};
+      for (const uid of participants) {
+        const p = getUserPseudo(conversation, uid);
+        if (p) pseudoMap[uid] = p;
+      }
+      history.forEach(msg => {
+        const senderPseudo = pseudoMap[msg.sender_id] || 'Anonymous';
+        const date = new Date(msg.sent_at).toLocaleString();
+        historyText += `**${senderPseudo}** (${date}): ${msg.content}\n\n`;
       });
+
+      const embed = new EmbedBuilder()
+        .setColor(0x6C2BD9)
+        .setTitle('📜 Conversation History (last 10)')
+        .setDescription(historyText || 'No messages')
+        .setFooter({ text: 'Vegas Whispers' })
+        .setTimestamp();
+
+      await interaction.editReply({ embeds: [embed] });
       return;
     }
 
@@ -882,102 +701,87 @@ client.on('interactionCreate', async interaction => {
 
       const paragraphs = replyContent.split(/\n\s*\n/).filter(p => p.trim().length > 0);
       if (paragraphs.length > 3) {
-        await interaction.editReply({
-          content: `❌ **${paragraphs.length} paragraphs** detected. Maximum is 3.`
-        });
+        await interaction.editReply({ content: `❌ **${paragraphs.length} paragraphs** detected. Maximum is 3.` });
         await showMainMenu(interaction);
         return;
       }
 
-      getMessageById(messageId, async (err, originalMessage) => {
-        if (err || !originalMessage) {
-          await interaction.editReply({ content: '❌ Original message not found.' });
-          await showMainMenu(interaction);
-          return;
-        }
+      const originalMessage = getMessageById(messageId);
+      if (!originalMessage) {
+        await interaction.editReply({ content: '❌ Original message not found.' });
+        await showMainMenu(interaction);
+        return;
+      }
 
-        if (originalMessage.receiver_id !== replier.id) {
-          await interaction.editReply({ content: '❌ You are not authorized to reply.' });
-          await showMainMenu(interaction);
-          return;
-        }
+      if (originalMessage.receiver_id !== replier.id) {
+        await interaction.editReply({ content: '❌ You are not authorized to reply.' });
+        await showMainMenu(interaction);
+        return;
+      }
 
-        getOrCreateConversation(replier.id, senderId, async (err, conversation) => {
-          if (err) {
-            console.error('❌ getOrCreateConversation reply error:', err);
-            await interaction.editReply({ content: '❌ Error creating conversation.' });
-            await showMainMenu(interaction);
-            return;
+      let conversation;
+      try {
+        conversation = getOrCreateConversation(replier.id, senderId);
+      } catch (err) {
+        console.error('❌ getOrCreateConversation reply error:', err);
+        await interaction.editReply({ content: '❌ Error creating conversation.' });
+        await showMainMenu(interaction);
+        return;
+      }
+
+      let savedMessage;
+      try {
+        savedMessage = saveMessage(conversation.id, replier.id, senderId, replyContent);
+      } catch (err) {
+        console.error('❌ saveMessage reply error:', err);
+        await interaction.editReply({ content: '❌ Error saving reply.' });
+        await showMainMenu(interaction);
+        return;
+      }
+
+      await interaction.editReply({ content: '✅ Reply sent!' });
+
+      const senderPseudo = getUserPseudo(conversation, replier.id);
+
+      try {
+        const sender = await client.users.fetch(senderId);
+
+        const lastMsg = getLastMessage(conversation.id);
+
+        const embed = new EmbedBuilder()
+          .setColor(0x6C2BD9)
+          .setImage(BANNER_URL)
+          .setAuthor({ name: `💬 Reply from ${senderPseudo || 'Anonymous'}` })
+          .setDescription(replyContent)
+          .setFooter({ text: `ID: ${savedMessage.id}` })
+          .setTimestamp();
+
+        if (lastMsg) {
+          const participants = [conversation.user_a_id, conversation.user_b_id];
+          const pseudoMap = {};
+          for (const uid of participants) {
+            const p = getUserPseudo(conversation, uid);
+            if (p) pseudoMap[uid] = p;
           }
+          const sp = pseudoMap[lastMsg.sender_id] || 'Anonymous';
+          const preview = lastMsg.content.length > 100 ? lastMsg.content.slice(0, 100) + '...' : lastMsg.content;
+          embed.addFields({ name: '📜 Last message', value: `**${sp}:** ${preview}` });
+        }
 
-          saveMessage(conversation.id, replier.id, senderId, replyContent, async (err, savedMessage) => {
-            if (err) {
-              console.error('❌ saveMessage reply error:', err);
-              await interaction.editReply({ content: '❌ Error saving reply.' });
-              await showMainMenu(interaction);
-              return;
-            }
+        const row1 = new ActionRowBuilder()
+          .addComponents(
+            new ButtonBuilder().setCustomId(`reply_${savedMessage.id}_${replier.id}`).setLabel('💬 Reply').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId(`block_${conversation.id}_${replier.id}`).setLabel('🚫 Block Sender').setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId(`history_${conversation.id}`).setLabel('📜 History').setStyle(ButtonStyle.Secondary)
+          );
 
-            await interaction.editReply({ content: '✅ Reply sent!' });
+        await sender.send({ content: `👋 **Someone replied to your whisper:**`, embeds: [embed], components: [row1] });
+        console.log(`✅ Reply sent from ${replier.username}`);
+      } catch (error) {
+        console.error(`❌ Error sending reply:`, error);
+      }
 
-            const senderPseudo = getUserPseudo(conversation, replier.id);
-
-            try {
-              const sender = await client.users.fetch(senderId);
-
-              getLastMessage(conversation.id, async (err, lastMsg) => {
-                const embed = new EmbedBuilder()
-                  .setColor(0x6C2BD9)
-                  .setImage(BANNER_URL)
-                  .setAuthor({ name: `💬 Reply from ${senderPseudo || 'Anonymous'}` })
-                  .setDescription(replyContent)
-                  .setFooter({ text: `ID: ${savedMessage.id}` })
-                  .setTimestamp();
-
-                if (lastMsg) {
-                  const pseudoMap = {};
-                  const participants = [conversation.user_a_id, conversation.user_b_id];
-                  for (const uid of participants) {
-                    const p = getUserPseudo(conversation, uid);
-                    if (p) pseudoMap[uid] = p;
-                  }
-                  const sp = pseudoMap[lastMsg.sender_id] || 'Anonymous';
-                  const preview = lastMsg.content.length > 100 ? lastMsg.content.slice(0, 100) + '...' : lastMsg.content;
-                  embed.addFields({ name: '📜 Last message', value: `**${sp}:** ${preview}` });
-                }
-
-                const row1 = new ActionRowBuilder()
-                  .addComponents(
-                    new ButtonBuilder()
-                      .setCustomId(`reply_${savedMessage.id}_${replier.id}`)
-                      .setLabel('💬 Reply')
-                      .setStyle(ButtonStyle.Primary),
-                    new ButtonBuilder()
-                      .setCustomId(`block_${conversation.id}_${replier.id}`)
-                      .setLabel('🚫 Block Sender')
-                      .setStyle(ButtonStyle.Danger),
-                    new ButtonBuilder()
-                      .setCustomId(`history_${conversation.id}`)
-                      .setLabel('📜 History')
-                      .setStyle(ButtonStyle.Secondary)
-                  );
-
-                await sender.send({
-                  content: `👋 **Someone replied to your whisper:**`,
-                  embeds: [embed],
-                  components: [row1]
-                });
-
-                console.log(`✅ Reply sent from ${replier.username}`);
-              });
-            } catch (error) {
-              console.error(`❌ Error sending reply:`, error);
-            }
-
-            await showMainMenu(interaction);
-          });
-        });
-      });
+      await showMainMenu(interaction);
       return;
     }
 
@@ -988,40 +792,26 @@ client.on('interactionCreate', async interaction => {
       const conversationId = parts[1];
       const senderId = parts[2];
 
-      db.get(
-        `SELECT * FROM conversations WHERE id = ?`,
-        [conversationId],
-        async (err, conversation) => {
-          if (err || !conversation) {
-            await interaction.editReply({ content: '❌ Conversation not found.' });
-            await showMainMenu(interaction);
-            return;
-          }
+      const conversation = db.prepare(`SELECT * FROM conversations WHERE id = ?`).get(conversationId);
+      if (!conversation) {
+        await interaction.editReply({ content: '❌ Conversation not found.' });
+        await showMainMenu(interaction);
+        return;
+      }
 
-          if (conversation.user_a_id !== interaction.user.id && conversation.user_b_id !== interaction.user.id) {
-            await interaction.editReply({ content: '❌ You are not part of this conversation.' });
-            await showMainMenu(interaction);
-            return;
-          }
+      if (conversation.user_a_id !== interaction.user.id && conversation.user_b_id !== interaction.user.id) {
+        await interaction.editReply({ content: '❌ You are not part of this conversation.' });
+        await showMainMenu(interaction);
+        return;
+      }
 
-          const row = new ActionRowBuilder()
-            .addComponents(
-              new ButtonBuilder()
-                .setCustomId(`confirm_block_${conversationId}_${senderId}`)
-                .setLabel('✅ Yes, Block')
-                .setStyle(ButtonStyle.Danger),
-              new ButtonBuilder()
-                .setCustomId(`cancel_block_${conversationId}`)
-                .setLabel('❌ Cancel')
-                .setStyle(ButtonStyle.Secondary)
-            );
+      const row = new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder().setCustomId(`confirm_block_${conversationId}_${senderId}`).setLabel('✅ Yes, Block').setStyle(ButtonStyle.Danger),
+          new ButtonBuilder().setCustomId(`cancel_block_${conversationId}`).setLabel('❌ Cancel').setStyle(ButtonStyle.Secondary)
+        );
 
-          await interaction.editReply({
-            content: `⚠️ **Block this sender?** You will no longer receive messages.`,
-            components: [row]
-          });
-        }
-      );
+      await interaction.editReply({ content: `⚠️ **Block this sender?** You will no longer receive messages.`, components: [row] });
       return;
     }
 
@@ -1031,34 +821,28 @@ client.on('interactionCreate', async interaction => {
       const conversationId = parts[2];
       const senderId = parts[3];
 
-      blockConversation(conversationId, interaction.user.id, async (err) => {
-        if (err) {
-          await interaction.editReply({ content: '❌ Error blocking.', components: [] });
-          await showMainMenu(interaction);
-          return;
-        }
-
-        await interaction.editReply({
-          content: `✅ **Blocked.**`,
-          components: []
-        });
-
-        try {
-          const sender = await client.users.fetch(senderId);
-          await sender.send({ content: `🚫 **You have been blocked.**` });
-        } catch { /* ignore */ }
-
+      try {
+        blockConversation(conversationId, interaction.user.id);
+      } catch (err) {
+        await interaction.editReply({ content: '❌ Error blocking.', components: [] });
         await showMainMenu(interaction);
-      });
+        return;
+      }
+
+      await interaction.editReply({ content: `✅ **Blocked.**`, components: [] });
+
+      try {
+        const sender = await client.users.fetch(senderId);
+        await sender.send({ content: `🚫 **You have been blocked.**` });
+      } catch { /* ignore */ }
+
+      await showMainMenu(interaction);
       return;
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('cancel_block_')) {
       await interaction.deferUpdate();
-      await interaction.editReply({
-        content: `❌ Cancelled.`,
-        components: []
-      });
+      await interaction.editReply({ content: `❌ Cancelled.`, components: [] });
       await showMainMenu(interaction);
       return;
     }
@@ -1077,44 +861,16 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-// =============================================
 // ===== DÉMARRAGE =====
-// =============================================
 client.once('ready', async () => {
   console.log(`✅ Bot online as ${client.user.tag}`);
   try {
-    await rest.put(
-      Routes.applicationCommands(client.user.id),
-      { body: commands }
-    );
+    await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
     console.log('✅ Slash commands registered!');
   } catch (error) {
     console.error('❌ Error registering commands:', error);
   }
   await restorePersistentViews();
-  
-  // Pré-remplir le cache des membres pour tous les serveurs
-  console.log('🔄 Pre-caching members...');
-  for (const guild of client.guilds.cache.values()) {
-    try {
-      await guild.members.fetch();
-      const members = guild.members.cache
-        .filter(m => !m.user.bot)
-        .map(m => ({
-          id: m.user.id,
-          username: m.user.username,
-          displayName: m.displayName
-        }));
-      memberCache.set(guild.id, {
-        members: members,
-        lastUpdated: Date.now()
-      });
-      console.log(`  ↳ Cached ${members.length} members for ${guild.name}`);
-    } catch (error) {
-      console.error(`  ❌ Error caching members for ${guild.name}:`, error.message);
-    }
-  }
-  console.log('✅ Member cache ready!');
 });
 
 client.login(process.env.TOKEN);
