@@ -1,0 +1,453 @@
+const fs = require('fs');
+
+const file = 'index.js';
+const backup = 'index.js.before-ux-simplification.bak';
+
+const source = fs.readFileSync(file, 'utf8');
+fs.writeFileSync(backup, source, 'utf8');
+
+let code = source;
+
+// =====================================================
+// 1. IMPORT : UserSelectMenuBuilder
+// =====================================================
+
+code = code.replace(
+  /StringSelectMenuBuilder,\s*StringSelectMenuOptionBuilder,/,
+  'UserSelectMenuBuilder,'
+);
+
+// =====================================================
+// 2. REMPLACE BUILD MEMBER PANEL
+// =====================================================
+
+const memberPanelRegex =
+  /function buildMemberPanel\([\s\S]*?\n}\n\nfunction buildPseudoPanel/;
+
+const newMemberPanel = `
+function buildMemberPanel(requestId) {
+  const embed = new EmbedBuilder()
+    .setColor(PURPLE)
+    .setImage(BANNER_URL)
+    .setTitle('💋 Vegas Whispers')
+    .setDescription([
+      '**Choisir le membre**',
+      '',
+      'Commence à taper un nom, un pseudo serveur ou sélectionne directement le membre.',
+      '',
+      'Votre identité restera anonyme.'
+    ].join('\\\\n'))
+    .addFields({
+      name: '💬 Quote',
+      value: getRandomQuote(),
+      inline: false
+    })
+    .setFooter({
+      text: 'Vegas Whispers • Your identity is safe'
+    });
+
+  const select = new UserSelectMenuBuilder()
+    .setCustomId(\`vw_recipient_\${requestId}\`)
+    .setPlaceholder('Choisir le membre...')
+    .setMinValues(1)
+    .setMaxValues(1);
+
+  const row = new ActionRowBuilder()
+    .addComponents(select);
+
+  const cancelRow = new ActionRowBuilder()
+    .addComponents(
+      new ButtonBuilder()
+        .setCustomId(\`vw_cancel_\${requestId}\`)
+        .setLabel('Annuler')
+        .setStyle(ButtonStyle.Secondary)
+    );
+
+  return {
+    embeds: [embed],
+    components: [row, cancelRow]
+  };
+}
+
+function buildPseudoPanel`;
+
+/*
+  We replace the previous function name by a compose panel.
+*/
+
+if (!memberPanelRegex.test(code)) {
+  throw new Error('❌ buildMemberPanel introuvable.');
+}
+
+code = code.replace(memberPanelRegex, newMemberPanel);
+
+// =====================================================
+// 3. REMPLACE BUILD PSEUDO PANEL
+//    -> pseudo + write message sur le même écran
+// =====================================================
+
+const pseudoRegex =
+  /function buildPseudoPanel\([\s\S]*?\n}\n\nfunction buildWritingPanel/;
+
+const newPseudoPanel = `
+function buildPseudoPanel(
+  targetDisplayName,
+  targetId,
+  requestId,
+  selectedPseudo = null
+) {
+  const embed = new EmbedBuilder()
+    .setColor(PURPLE)
+    .setImage(BANNER_URL)
+    .setTitle('💌 Votre Whisper')
+    .setDescription([
+      \`Vous allez écrire à **\${targetDisplayName}**.\`,
+      '',
+      '**Choisissez votre identité :**',
+      selectedPseudo
+        ? \`✅ Identité choisie : **\${selectedPseudo}**\`
+        : 'Aucune identité choisie',
+      '',
+      'Puis cliquez sur **Écrire le message**.'
+    ].join('\\\\n'))
+    .addFields({
+      name: '💬 Quote',
+      value: getRandomQuote(),
+      inline: false
+    })
+    .setFooter({
+      text: 'Vegas Whispers • Your identity is safe'
+    });
+
+  const shadow = new ButtonBuilder()
+    .setCustomId(\`vw_pseudo_\${targetId}_\${requestId}_shadow\`)
+    .setLabel('👤 Shadow')
+    .setStyle(
+      selectedPseudo === PSEUDOS.shadow
+        ? ButtonStyle.Success
+        : ButtonStyle.Secondary
+    );
+
+  const admirer = new ButtonBuilder()
+    .setCustomId(\`vw_pseudo_\${targetId}_\${requestId}_admirer\`)
+    .setLabel('❤️ Secret Admirer')
+    .setStyle(
+      selectedPseudo === PSEUDOS.admirer
+        ? ButtonStyle.Success
+        : ButtonStyle.Secondary
+    );
+
+  const friendly = new ButtonBuilder()
+    .setCustomId(\`vw_pseudo_\${targetId}_\${requestId}_friendly\`)
+    .setLabel('🤝 Friendly Curious')
+    .setStyle(
+      selectedPseudo === PSEUDOS.friendly
+        ? ButtonStyle.Success
+        : ButtonStyle.Secondary
+    );
+
+  const write = new ButtonBuilder()
+    .setCustomId(\`vw_open_modal_\${targetId}_\${requestId}\`)
+    .setLabel('✍️ Écrire le message')
+    .setStyle(
+      selectedPseudo
+        ? ButtonStyle.Primary
+        : ButtonStyle.Secondary
+    );
+
+  return {
+    embeds: [embed],
+    components: [
+      new ActionRowBuilder().addComponents(
+        shadow,
+        admirer,
+        friendly
+      ),
+      new ActionRowBuilder().addComponents(
+        write
+      )
+    ]
+  };
+}
+
+function buildWritingPanel`;
+
+/*
+  Keep buildWritingPanel for compatibility with the rest of the file.
+*/
+
+if (!pseudoRegex.test(code)) {
+  throw new Error('❌ buildPseudoPanel introuvable.');
+}
+
+code = code.replace(pseudoRegex, newPseudoPanel);
+
+// =====================================================
+// 4. LE PREMIER ÉCRAN NE CHARGE PLUS TOUS LES MEMBRES
+// =====================================================
+
+// /whisper
+code = code.replace(
+  /const members =\s*await getCachedMembers\(\s*interaction\.guild,\s*interaction\.user\.id\s*\);\s*\n\s*if \(\s*!members\.length\s*\) \{[\s\S]*?\n\s*\}\s*\n\s*\n\s*const panel =\s*buildMemberPanel\(\s*requestId,\s*members\s*\);/,
+  `const panel = buildMemberPanel(requestId);`
+);
+
+// panneau permanent
+code = code.replace(
+  /const members =\s*await getCachedMembers\(\s*interaction\.guild,\s*interaction\.user\.id\s*\);\s*\n\s*if \(\s*!members\.length\s*\) \{[\s\S]*?\n\s*\}\s*\n\s*\n\s*const panel =\s*buildMemberPanel\(\s*requestId,\s*members\s*\);/,
+  `const panel = buildMemberPanel(requestId);`
+);
+
+// =====================================================
+// 5. SUPPRIME SEARCH MEMBER + SEARCH MODAL
+//    ET REMPLACE PAR USER SELECT
+// =====================================================
+
+const searchBlockRegex =
+  /\/\/ =====================================================\n\/\/ SEARCH MEMBER[\s\S]*?\/\/ =====================================================\n\/\/ CANCEL/;
+
+const newRecipientBlock = `// =====================================================
+      // RECIPIENT SELECT
+      // =====================================================
+
+      if (
+        interaction.isUserSelectMenu() &&
+        interaction.customId.startsWith('vw_recipient_')
+      ) {
+        await interaction.deferUpdate();
+
+        const requestId =
+          interaction.customId.slice('vw_recipient_'.length);
+
+        const targetId =
+          interaction.values[0];
+
+        const session =
+          getSession(interaction.user.id);
+
+        if (
+          !session ||
+          session.request_id !== requestId ||
+          session.state !== 'selecting_recipient'
+        ) {
+          await failCurrentSession(interaction);
+          return;
+        }
+
+        try {
+          const member =
+            await resolveTargetMember(
+              interaction.guild,
+              targetId,
+              interaction.user.id
+            );
+
+          const panel =
+            buildPseudoPanel(
+              member.displayName ||
+                member.user.username,
+              member.id,
+              requestId
+            );
+
+          await interaction.editReply(panel);
+
+          saveSession(
+            interaction.user.id,
+            interaction.channel.id,
+            interaction.message.id,
+            'choosing_pseudo',
+            {
+              guildId: interaction.guild.id,
+              targetId: member.id,
+              targetDisplayName:
+                member.displayName ||
+                member.user.username
+            },
+            requestId
+          );
+        } catch (error) {
+          console.error(
+            '❌ Recipient selection error:',
+            safeErrorMessage(error)
+          );
+
+          await failCurrentSession(interaction);
+        }
+
+        return;
+      }
+
+      // =================================================
+      // CANCEL`;
+
+if (!searchBlockRegex.test(code)) {
+  throw new Error('❌ Bloc SEARCH MEMBER introuvable.');
+}
+
+code = code.replace(searchBlockRegex, newRecipientBlock);
+
+// =====================================================
+// 6. REMPLACE LE HANDLER PSEUDO
+//    -> RESTE SUR LE MÊME ÉCRAN
+// =====================================================
+
+const pseudoHandlerRegex =
+  /\/\/ =================================================\n\/\/ PSEUDONYM[\s\S]*?\/\/ =================================================\n\/\/ OPEN MESSAGE MODAL/;
+
+const newPseudoHandler = `// =================================================
+      // PSEUDONYM
+      // =================================================
+
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith('vw_pseudo_')
+      ) {
+        await interaction.deferUpdate();
+
+        const parts =
+          interaction.customId.split('_');
+
+        if (parts.length !== 5) {
+          await failCurrentSession(interaction);
+          return;
+        }
+
+        const targetId =
+          parts[2];
+
+        const requestId =
+          parts[3];
+
+        const pseudoType =
+          parts[4];
+
+        const pseudo =
+          PSEUDOS[pseudoType];
+
+        const session =
+          getSession(interaction.user.id);
+
+        if (
+          !pseudo ||
+          !session ||
+          session.request_id !== requestId ||
+          session.state !== 'choosing_pseudo'
+        ) {
+          await failCurrentSession(interaction);
+          return;
+        }
+
+        const data =
+          parseSessionData(session);
+
+        if (
+          !data ||
+          data.targetId !== targetId
+        ) {
+          await failCurrentSession(interaction);
+          return;
+        }
+
+        try {
+          const conversation =
+            getOrCreateConversation(
+              interaction.user.id,
+              targetId
+            );
+
+          setUserPseudo(
+            conversation.id,
+            interaction.user.id,
+            pseudo
+          );
+
+          const panel =
+            buildPseudoPanel(
+              data.targetDisplayName,
+              targetId,
+              requestId,
+              pseudo
+            );
+
+          await interaction.editReply(panel);
+
+          saveSession(
+            interaction.user.id,
+            interaction.channel.id,
+            interaction.message.id,
+            'writing_message',
+            {
+              guildId: data.guildId,
+              targetId,
+              targetDisplayName:
+                data.targetDisplayName,
+              conversationId:
+                conversation.id,
+              pseudo
+            },
+            requestId
+          );
+        } catch (error) {
+          console.error(
+            '❌ Pseudonym selection error:',
+            safeErrorMessage(error)
+          );
+
+          await failCurrentSession(interaction);
+        }
+
+        return;
+      }
+
+      // =================================================
+      // OPEN MESSAGE MODAL`;
+
+if (!pseudoHandlerRegex.test(code)) {
+  throw new Error('❌ Handler PSEUDONYM introuvable.');
+}
+
+code = code.replace(
+  pseudoHandlerRegex,
+  newPseudoHandler
+);
+
+// =====================================================
+// 7. LE BOUTON WRITE MODAL ACCEPTE writing_message
+// =====================================================
+
+code = code.replace(
+  /session\.state !==\s*'writing_message'/,
+  `session.state !== 'writing_message'`
+);
+
+// =====================================================
+// 8. VÉRIFICATIONS
+// =====================================================
+
+if (
+  code.includes('vw_search_') ||
+  code.includes('vw_search_modal_') ||
+  code.includes('Search Member') ||
+  code.includes('Select a member...')
+) {
+  console.warn(
+    '⚠️ Certains anciens éléments UX sont encore présents dans le fichier.'
+  );
+}
+
+if (!code.includes('UserSelectMenuBuilder')) {
+  throw new Error(
+    '❌ UserSelectMenuBuilder absent après modification.'
+  );
+}
+
+fs.writeFileSync(file, code, 'utf8');
+
+console.log('');
+console.log('✅ UX Vegas Whispers corrigée.');
+console.log('✅ Backup créé : ' + backup);
+console.log('✅ Sélecteur membre natif activé.');
+console.log('✅ Search Member supprimé.');
+console.log('✅ Pseudo + composition regroupés.');
+console.log('');
